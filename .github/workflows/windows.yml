@@ -23,6 +23,21 @@ jobs:
       - name: Crea l'installer
         run: npx electron-builder --win nsis --x64 --publish never
 
+      # Prova vera su Windows: scarica e carica i modelli nei processi di lavoro dell'app installata.
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Converto\models
+          key: converto-models-${{ hashFiles('src/engines/portable/models.js') }}
+
+      - name: Verifica il motore (self-test)
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          & "dist\win-unpacked\Converto.exe" --self-test | Out-String
+          $log = "$env:APPDATA\Converto\self-test.log"
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern "OK: motore pronto" -Quiet)) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: Converto-Windows
