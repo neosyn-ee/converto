@@ -34,6 +34,8 @@ Al primo avvio l'app scarica i modelli (circa 800 MB per inglese → italiano) i
 
 **Sviluppo su Windows:** Node 20+, poi `npm install`, `npm start`, `npm run dist:win`.
 
+**Diagnostica:** da PowerShell `& "$env:LOCALAPPDATA\Programs\converto\Converto.exe" --self-test | Out-String` scarica e carica i modelli senza aprire la finestra, poi termina con `OK: motore pronto` oppure con l'errore. L'esito resta anche in `%APPDATA%\Converto\self-test.log`.
+
 **Prove senza Windows** (anche su Mac):
 
 ```bash

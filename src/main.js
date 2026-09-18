@@ -34,6 +34,7 @@ const NO_TRANSLATION = 'none';
 const TITLE_BAR_HEIGHT = 52;
 
 let win = null;
+let selfTest = null; // `--self-test`: diagnostica del motore da riga di comando
 let transcript = null;
 let overlay = false;
 let normalBounds = null;
@@ -144,6 +145,10 @@ function send(message) {
 // ---------- Motore ----------
 
 function onEngineMessage(message) {
+  if (selfTest) {
+    selfTest(message);
+    return;
+  }
   if (message.type === 'final') writeTranscript(message);
   send(message);
 }
@@ -250,9 +255,56 @@ ipcMain.on('open:settings', (_event, pane) => {
   if (SETTINGS_PANES[pane]) shell.openExternal(SETTINGS_PANES[pane]);
 });
 
+// ---------- Diagnostica ----------
+
+/**
+ * `Converto --self-test`: scarica (se servono) e carica i modelli, poi esce con 0 se il motore
+ * è pronto e 1 in caso di errore. Utile per verificare un'installazione senza interfaccia.
+ */
+function runSelfTest() {
+  // Le app grafiche su Windows spesso non mostrano l'output nel terminale: l'esito va anche su file.
+  const logPath = path.join(app.getPath('userData'), 'self-test.log');
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  fs.writeFileSync(logPath, '');
+  const log = (line) => {
+    console.log(line);
+    fs.appendFileSync(logPath, `${line}\n`);
+  };
+  const finish = (code) => {
+    log(`Registro: ${logPath}`);
+    engine.stop();
+    app.exit(code);
+  };
+
+  log(`Converto ${app.getVersion()} · ${process.platform}-${process.arch} · motore ${USE_PORTABLE_ENGINE ? 'portabile' : 'Swift'}`);
+  log(`Modelli: ${MODELS_DIR}`);
+  let lastProgress = -1;
+  selfTest = (message) => {
+    if (message.type === 'progress') {
+      const percent = Math.floor(message.value * 100);
+      if (percent >= lastProgress + 10) {
+        lastProgress = percent;
+        log(`  download ${percent}%`);
+      }
+    } else if (message.type === 'status') {
+      log(`  ${message.message}`);
+      if (message.state === 'listening') {
+        log('OK: motore pronto');
+        finish(0);
+      }
+    } else if (message.type === 'error') {
+      log(`ERRORE ${message.code}: ${message.message}`);
+      if (message.code !== 'translation_unsupported') finish(1);
+    }
+  };
+  engine.start({ source: 'en-US', target: 'it', input: 'system' });
+}
+
 // ---------- Ciclo di vita ----------
 
-if (!app.requestSingleInstanceLock()) {
+if (process.argv.includes('--self-test')) {
+  app.whenReady().then(runSelfTest);
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
