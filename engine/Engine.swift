@@ -4,18 +4,20 @@ import Speech
 
 /// Motore di Converto: cattura audio → trascrizione (SpeechAnalyzer) → traduzione.
 /// Riceve la configurazione da riga di comando e comunica con Electron via JSON su stdout.
+/// Ogni messaggio porta il flusso: "others" = audio del Mac, "me" = microfono.
 ///
-///   converto-engine --source en-US --target it|none --input system|mic [--mic <UID dispositivo>]
-///   converto-engine --source en-US --target it --file audio.wav [--realtime]
+///   converto-engine --source en-US --target it|none --input system|mic|both [--mic <UID dispositivo>]
+///   converto-engine --source en-US --target it --file audio.wav [--stream me] [--realtime]
+///   converto-engine --mic-file io.wav --system-file altri.wav   (prova di "Io + altri", in tempo reale)
 @main
 enum Engine {
-    private static var captureSource: AnyObject?
+    private static var captureSources: [AnyObject] = []
     private static var signalSources: [DispatchSourceSignal] = []
 
     static func main() async {
         let config = Config.parse()
         exitOnSignal()
-        if case .file = config.input {} else {
+        if !config.input.isFiles {
             exitWhenStdinCloses()
         }
         do {
@@ -43,62 +45,65 @@ enum Engine {
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: config.source)) else {
             throw EngineError(code: "speech_unsupported", message: "Lingua \(config.source) non supportata dal riconoscimento vocale.")
         }
-        let transcriber = SpeechTranscriber(locale: locale,
-                                            transcriptionOptions: [],
-                                            reportingOptions: [.volatileResults, .fastResults],
-                                            attributeOptions: [])
-        // Trascrive solo quando c'è voce: niente testo inventato su musica o rumore, e meno consumi.
-        let detector = SpeechDetector(detectionOptions: .init(sensitivityLevel: .medium), reportResults: false)
-        let modules: [any SpeechModule] = [detector, transcriber]
-        try await installSpeechAssets(for: modules)
+        try await installSpeechAssets(for: Pipeline.modules(locale: locale))
 
-        let analyzer = SpeechAnalyzer(modules: modules)
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
-            throw EngineError(code: "speech_unavailable", message: "Nessun formato audio compatibile con il riconoscimento vocale.")
+        var pipelines: [String: Pipeline] = [:]
+        for stream in config.input.streams {
+            pipelines[stream] = try await Pipeline.make(stream: stream, locale: locale, translator: translator)
         }
-        try await analyzer.prepareToAnalyze(in: format)
-
-        let (inputs, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        let captions = Captions(translator: translator)
-        let results = Task { try await captions.consume(transcriber.results) }
-        try await analyzer.start(inputSequence: inputs)
-
-        // Alla pausa si chiude subito la frase in corso, ma solo se ce n'è una: chiedere di chiudere
-        // quando è arrivato solo rumore fa rifiutare la sessione al riconoscimento (RecogRejected).
-        let feeder = AudioFeeder(format: format, continuation: continuation) {
-            Task {
-                if await captions.hasVolatileResult {
-                    try? await analyzer.finalize(through: nil)
-                }
+        let others = pipelines["others"]
+        let me = pipelines["me"]
+        // Con entrambi i flussi, l'audio del Mac fa da riferimento per togliere l'eco dal microfono.
+        let echoGate = others != nil && me != nil ? EchoGate() : nil
+        let onSystemAudio: (AVAudioPCMBuffer) -> Void = { buffer in
+            echoGate?.observeReference(buffer)
+            others?.feeder.feed(buffer)
+        }
+        let onMicrophone: (AVAudioPCMBuffer) -> Void = { buffer in
+            guard let me else { return }
+            if let echoGate {
+                echoGate.process(buffer, emit: me.feeder.feed)
+            } else {
+                me.feeder.feed(buffer)
             }
         }
 
         switch config.input {
-        case .file(let path):
-            try await feed(file: path, into: feeder, realtime: config.realtime)
-            continuation.finish()
-            if await captions.hasVolatileResult {
-                try await analyzer.finalizeAndFinishThroughEndOfInput()
-            } else {
-                await analyzer.cancelAndFinishNow() // file senza parlato: niente da chiudere
-            }
-            do {
-                try await results.value
-            } catch is CancellationError {}
+        case .file(let path, _):
+            let pipeline = me ?? others!
+            try await feed(file: path, realtime: config.realtime, into: pipeline.feeder.feed)
+            try await pipeline.finish()
             return
-        case .microphone:
-            let microphone = MicrophoneCapture(deviceUID: config.microphoneUID, onBuffer: feeder.feed)
-            try await microphone.start()
-            captureSource = microphone
-        case .system:
-            try await ensureAudioCapturePermission()
-            let tap = SystemAudioTap(onBuffer: feeder.feed)
-            try tap.start()
-            captureSource = tap
+        case .files(let micPath, let systemPath):
+            async let system: Void = feed(file: systemPath, realtime: true, into: onSystemAudio)
+            async let microphone: Void = feed(file: micPath, realtime: true, into: onMicrophone)
+            _ = try await (system, microphone)
+            for pipeline in pipelines.values {
+                try await pipeline.finish()
+            }
+            return
+        case .system, .microphone, .both:
+            if others != nil {
+                try await ensureAudioCapturePermission()
+                let tap = SystemAudioTap(onBuffer: onSystemAudio)
+                try tap.start()
+                captureSources.append(tap)
+            }
+            if me != nil {
+                let microphone = MicrophoneCapture(deviceUID: config.microphoneUID, onBuffer: onMicrophone)
+                try await microphone.start()
+                captureSources.append(microphone)
+            }
         }
 
         Output.status("listening", "In ascolto")
-        try await results.value
+        // Se un flusso si interrompe, il motore esce e Electron lo riavvia.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for pipeline in pipelines.values {
+                group.addTask { try await pipeline.results.value }
+            }
+            try await group.next()
+        }
     }
 
     private static func installSpeechAssets(for modules: [any SpeechModule]) async throws {
@@ -127,13 +132,13 @@ enum Engine {
     }
 
     /// Con `realtime` il file viene letto alla velocità di riproduzione, come una call vera.
-    private static func feed(file path: String, into feeder: AudioFeeder, realtime: Bool) async throws {
+    private static func feed(file path: String, realtime: Bool, into feed: (AVAudioPCMBuffer) -> Void) async throws {
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
         while file.framePosition < file.length {
             guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4800) else { break }
             try file.read(into: buffer)
             if buffer.frameLength == 0 { break }
-            feeder.feed(buffer)
+            feed(buffer)
             if realtime {
                 try await Task.sleep(for: .seconds(Double(buffer.frameLength) / buffer.format.sampleRate))
             }
@@ -160,8 +165,10 @@ enum Engine {
     }
 
     private static func shutdown() {
-        (captureSource as? SystemAudioTap)?.stop()
-        (captureSource as? MicrophoneCapture)?.stop()
+        for source in captureSources {
+            (source as? SystemAudioTap)?.stop()
+            (source as? MicrophoneCapture)?.stop()
+        }
         exit(0)
     }
 }
@@ -171,7 +178,25 @@ struct Config {
     static let noTranslation = "none"
 
     enum Input {
-        case system, microphone, file(String)
+        case system, microphone, both
+        case file(String, stream: String)
+        case files(microphone: String, system: String)
+
+        var streams: [String] {
+            switch self {
+            case .system: ["others"]
+            case .microphone: ["me"]
+            case .both, .files: ["me", "others"]
+            case .file(_, let stream): [stream]
+            }
+        }
+
+        var isFiles: Bool {
+            switch self {
+            case .file, .files: true
+            default: false
+            }
+        }
     }
 
     var source = "en-US"
@@ -182,19 +207,103 @@ struct Config {
 
     static func parse() -> Config {
         var config = Config()
+        var file: String?
+        var fileStream = "others"
+        var micFile: String?
+        var systemFile: String?
         var arguments = CommandLine.arguments.dropFirst().makeIterator()
         while let argument = arguments.next() {
             switch argument {
             case "--source": config.source = arguments.next() ?? config.source
             case "--target": config.target = arguments.next() ?? config.target
-            case "--input": config.input = arguments.next() == "mic" ? .microphone : .system
-            case "--file": config.input = .file(arguments.next() ?? "")
+            case "--input":
+                switch arguments.next() {
+                case "mic": config.input = .microphone
+                case "both": config.input = .both
+                default: config.input = .system
+                }
+            case "--file": file = arguments.next()
+            case "--stream": fileStream = arguments.next() ?? fileStream
+            case "--mic-file": micFile = arguments.next()
+            case "--system-file": systemFile = arguments.next()
             case "--realtime": config.realtime = true
             case "--mic": config.microphoneUID = arguments.next()
             default: break
             }
         }
+        if let micFile, let systemFile {
+            config.input = .files(microphone: micFile, system: systemFile)
+        } else if let file {
+            config.input = .file(file, stream: fileStream)
+        }
         return config
+    }
+}
+
+/// Riconoscimento (e traduzione) di un flusso audio: analizzatore, sottotitoli e alimentazione.
+final class Pipeline {
+    let feeder: AudioFeeder
+    let results: Task<Void, Error>
+    private let analyzer: SpeechAnalyzer
+    private let captions: Captions
+    private let continuation: AsyncStream<AnalyzerInput>.Continuation
+
+    private init(feeder: AudioFeeder, results: Task<Void, Error>, analyzer: SpeechAnalyzer, captions: Captions,
+                 continuation: AsyncStream<AnalyzerInput>.Continuation) {
+        self.feeder = feeder
+        self.results = results
+        self.analyzer = analyzer
+        self.captions = captions
+        self.continuation = continuation
+    }
+
+    static func modules(locale: Locale) -> [any SpeechModule] {
+        let transcriber = SpeechTranscriber(locale: locale,
+                                            transcriptionOptions: [],
+                                            reportingOptions: [.volatileResults, .fastResults],
+                                            attributeOptions: [])
+        // Trascrive solo quando c'è voce: niente testo inventato su musica o rumore, e meno consumi.
+        let detector = SpeechDetector(detectionOptions: .init(sensitivityLevel: .medium), reportResults: false)
+        return [detector, transcriber]
+    }
+
+    static func make(stream: String, locale: Locale, translator: Translator?) async throws -> Pipeline {
+        let modules = modules(locale: locale)
+        let transcriber = modules.compactMap { $0 as? SpeechTranscriber }[0]
+        let analyzer = SpeechAnalyzer(modules: modules)
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
+            throw EngineError(code: "speech_unavailable", message: "Nessun formato audio compatibile con il riconoscimento vocale.")
+        }
+        try await analyzer.prepareToAnalyze(in: format)
+
+        let (inputs, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        let captions = Captions(stream: stream, translator: translator)
+        let results = Task { try await captions.consume(transcriber.results) }
+        try await analyzer.start(inputSequence: inputs)
+
+        // Alla pausa si chiude subito la frase in corso, ma solo se ce n'è una: chiedere di chiudere
+        // quando è arrivato solo rumore fa rifiutare la sessione al riconoscimento (RecogRejected).
+        let feeder = AudioFeeder(stream: stream, format: format, continuation: continuation) {
+            Task {
+                if await captions.hasVolatileResult {
+                    try? await analyzer.finalize(through: nil)
+                }
+            }
+        }
+        return Pipeline(feeder: feeder, results: results, analyzer: analyzer, captions: captions, continuation: continuation)
+    }
+
+    /// Fine dell'audio (file): chiude l'ultima frase e attende gli ultimi risultati.
+    func finish() async throws {
+        continuation.finish()
+        if await captions.hasVolatileResult {
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+        } else {
+            await analyzer.cancelAndFinishNow() // niente parlato da chiudere
+        }
+        do {
+            try await results.value
+        } catch is CancellationError {}
     }
 }
 
@@ -214,6 +323,7 @@ actor Captions {
     private static let forcedBreakLength = 280
     private static let anchorLength = 3
 
+    private let stream: String
     private let translator: Translator?
     private var segment = 0
     /// Parole del risultato corrente già pubblicate e le ultime di esse, per ritrovare il punto di ripresa.
@@ -222,7 +332,8 @@ actor Captions {
     /// C'è un risultato provvisorio non ancora chiuso dal riconoscimento?
     private(set) var hasVolatileResult = false
 
-    init(translator: Translator?) {
+    init(stream: String, translator: Translator?) {
+        self.stream = stream
         self.translator = translator
     }
 
@@ -247,7 +358,7 @@ actor Captions {
                 pending.removeFirst(cut)
             }
             if !pending.isEmpty {
-                Output.emit("partial", ["id": segment, "text": pending.joined(separator: " ")])
+                Output.emit("partial", ["stream": stream, "id": segment, "text": pending.joined(separator: " ")])
             }
         }
     }
@@ -255,7 +366,7 @@ actor Captions {
     private func publish(_ words: [String]) async {
         guard let text = TextCleaner.clean(words.joined(separator: " ")) else { return }
         let translation = await translator?.translate(text)
-        Output.emit("final", ["id": segment, "text": text, "translation": translation ?? NSNull()])
+        Output.emit("final", ["stream": stream, "id": segment, "text": text, "translation": translation ?? NSNull()])
         segment += 1
     }
 
