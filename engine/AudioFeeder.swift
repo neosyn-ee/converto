@@ -9,6 +9,7 @@ final class AudioFeeder {
     private static let pauseAfterSeconds = 1.2
     private static let levelInterval = 0.12
 
+    private let stream: String
     private let format: AVAudioFormat
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
     private let onPause: () -> Void
@@ -22,7 +23,9 @@ final class AudioFeeder {
     private var lastLevelAt = Date.distantPast
 
     /// `onPause` viene chiamato quando inizia un silenzio: serve a chiudere subito la frase in corso.
-    init(format: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation, onPause: @escaping () -> Void) {
+    init(stream: String, format: AVAudioFormat, continuation: AsyncStream<AnalyzerInput>.Continuation,
+         onPause: @escaping () -> Void) {
+        self.stream = stream
         self.format = format
         self.continuation = continuation
         self.onPause = onPause
@@ -90,7 +93,7 @@ final class AudioFeeder {
         // -60 dB → 0, 0 dB → 1
         let level = max(0, min(1, (20 * log10(max(levelPeak, 1e-6)) + 60) / 60))
         if abs(level - lastLevel) > 0.02 {
-            Output.emit("level", ["value": (level * 100).rounded() / 100])
+            Output.emit("level", ["stream": stream, "value": (level * 100).rounded() / 100])
             lastLevel = level
         }
         levelPeak = 0
