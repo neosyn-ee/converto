@@ -61,6 +61,49 @@ enum CoreAudioSupport {
         return rate
     }
 
+    static func name(_ deviceID: AudioObjectID) -> String {
+        var address = address(kAudioObjectPropertyName)
+        var name: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name) == noErr,
+              let name = name?.takeRetainedValue() else { return "dispositivo audio" }
+        return name as String
+    }
+
+    static func isBluetooth(_ deviceID: AudioObjectID) -> Bool {
+        let transport = transportType(deviceID)
+        return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    /// Il microfono integrato del Mac, se c'è.
+    static func builtInInputDevice() -> AudioObjectID? {
+        allDevices().first { transportType($0) == kAudioDeviceTransportTypeBuiltIn && hasInput($0) }
+    }
+
+    private static func transportType(_ deviceID: AudioObjectID) -> UInt32 {
+        var address = address(kAudioDevicePropertyTransportType)
+        var transport = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport)
+        return transport
+    }
+
+    private static func hasInput(_ deviceID: AudioObjectID) -> Bool {
+        var address = address(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)
+        var size = UInt32(0)
+        return AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr && size > 0
+    }
+
+    private static func allDevices() -> [AudioObjectID] {
+        var address = address(kAudioHardwarePropertyDevices)
+        var size = UInt32(0)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return [] }
+        var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return [] }
+        return devices
+    }
+
     /// Esegue `handler` sulla coda indicata quando cambia il dispositivo predefinito.
     static func onDefaultDeviceChange(_ selector: AudioObjectPropertySelector, queue: DispatchQueue,
                                       _ handler: @escaping () -> Void) {
