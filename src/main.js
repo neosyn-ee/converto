@@ -1,12 +1,9 @@
 const { app, BrowserWindow, clipboard, ipcMain, screen, shell } = require('electron');
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const readline = require('node:readline');
+const { createNativeEngine } = require('./engines/native');
+const { SPEAKER_LABELS, createEchoFilter } = require('./speakers');
 
-const ENGINE_PATH = app.isPackaged
-  ? path.join(process.resourcesPath, 'bin', 'converto-engine')
-  : path.join(__dirname, '..', 'engine', 'build', 'converto-engine');
 const TRANSCRIPTS_DIR = path.join(app.getPath('documents'), 'Converto');
 const STATE_PATH = path.join(app.getPath('userData'), 'window-state.json');
 
@@ -20,7 +17,6 @@ const OVERLAY_SIZE = { width: 760, height: 170 };
 const NO_TRANSLATION = 'none';
 
 let win = null;
-let engine = null;
 let transcript = null;
 let overlay = false;
 let normalBounds = null;
@@ -109,43 +105,45 @@ function send(message) {
 
 // ---------- Motore ----------
 
-function startEngine({ source, target, input }) {
-  stopEngine({ restarting: true });
-  const proc = spawn(ENGINE_PATH, ['--source', source, '--target', target, '--input', input], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  engine = proc;
-  transcript = { source, target, stream: null };
+// In modalità "Io + altri" le frasi del microfono passano dal filtro dell'eco.
+const echoFilter = createEchoFilter(deliverEngineMessage);
 
-  readline.createInterface({ input: proc.stdout }).on('line', (line) => {
-    if (engine !== proc) return; // righe residue di un motore già fermato o sostituito
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (message.type === 'final') writeTranscript(message);
-    send(message);
-  });
-  proc.stderr.on('data', (data) => console.error('[engine]', data.toString().trim()));
-  proc.on('error', (error) => send({ type: 'error', code: 'engine_failed', message: error.message }));
-  proc.on('exit', () => {
-    if (engine !== proc) return; // già sostituito da un nuovo avvio
-    engine = null;
-    closeTranscript();
-    send({ type: 'stopped' });
-  });
+function onEngineMessage(message) {
+  if (transcript?.mixed) echoFilter.handle(message);
+  else deliverEngineMessage(message);
 }
 
-// Con `restarting` il motore viene solo sostituito: l'interfaccia deve restare "in ascolto".
-function stopEngine({ restarting = false } = {}) {
-  if (!engine) return;
-  const proc = engine;
-  engine = null;
-  proc.kill('SIGTERM');
+function deliverEngineMessage(message) {
+  if (message.type === 'final') writeTranscript(message);
+  send(message);
+}
+
+function onEngineStopped() {
+  echoFilter.reset();
   closeTranscript();
-  if (!restarting) send({ type: 'stopped' });
+  send({ type: 'stopped' });
+}
+
+const engine = createNativeEngine({
+  enginePath: app.isPackaged
+    ? path.join(process.resourcesPath, 'bin', 'converto-engine')
+    : path.join(__dirname, '..', 'engine', 'build', 'converto-engine'),
+  onMessage: onEngineMessage,
+  onStopped: onEngineStopped,
+});
+
+function startEngine(config) {
+  // Un nuovo avvio sostituisce il motore senza segnalare "fermo": l'interfaccia resta in ascolto.
+  engine.stop();
+  echoFilter.reset();
+  closeTranscript();
+  transcript = { source: config.source, target: config.target, mixed: config.input === 'both', stream: null };
+  engine.start(config);
+}
+
+function stopEngine() {
+  engine.stop();
+  onEngineStopped();
 }
 
 // ---------- Trascrizioni su file ----------
@@ -154,7 +152,7 @@ function languageName(code) {
   return new Intl.DisplayNames(['it'], { type: 'language' }).of(code.split('-')[0]) ?? code;
 }
 
-function writeTranscript({ text, translation }) {
+function writeTranscript({ text, translation, stream }) {
   if (!transcript) return;
   if (!transcript.stream) {
     fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
@@ -167,7 +165,10 @@ function writeTranscript({ text, translation }) {
     transcript.stream.write(`# Converto · ${now.toLocaleString('it-IT')} · ${pair}\n\n`);
   }
   const time = new Date().toLocaleTimeString('it-IT');
-  const lines = translation ? `**${time}** ${translation}  \n_${text}_\n\n` : `**${time}** ${text}\n\n`;
+  const speaker = transcript.mixed ? `**${SPEAKER_LABELS[stream]}:** ` : '';
+  const lines = translation
+    ? `**${time}** ${speaker}${translation}  \n_${text}_\n\n`
+    : `**${time}** ${speaker}${text}\n\n`;
   transcript.stream.write(lines);
 }
 
@@ -204,5 +205,5 @@ if (!app.requestSingleInstanceLock()) {
     if (!win) createWindow();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('will-quit', () => stopEngine());
+  app.on('will-quit', () => engine.stop());
 }
