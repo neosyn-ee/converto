@@ -3,6 +3,10 @@ import CoreAudio
 
 /// Cattura dal microfono leggendo direttamente il dispositivo di ingresso.
 ///
+/// Se il microfono predefinito è un auricolare Bluetooth (es. AirPods) si usa quello integrato del
+/// Mac: aprire il microfono Bluetooth fa passare le cuffie in modalità chiamata, con audio mono,
+/// più forte e meno nitido.
+///
 /// Non usa AVAudioEngine: quello unisce ingresso e uscita di sistema in un dispositivo aggregato
 /// e, con uscite come i dispositivi a uscita multipla, il microfono arriva mescolato ad altri
 /// canali o muto. Qui si prende sempre e solo il primo canale del dispositivo di ingresso.
@@ -50,8 +54,7 @@ final class MicrophoneCapture {
     }
 
     private func startDevice() throws {
-        deviceID = try deviceUID.map(CoreAudioSupport.device(withUID:))
-            ?? CoreAudioSupport.defaultDevice(kAudioHardwarePropertyDefaultInputDevice)
+        deviceID = try deviceUID.map(CoreAudioSupport.device(withUID:)) ?? preferredInputDevice()
         let sampleRate = try CoreAudioSupport.nominalSampleRate(deviceID)
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false) else {
             throw EngineError(code: "capture_failed", message: "Formato del microfono non supportato")
@@ -89,6 +92,18 @@ final class MicrophoneCapture {
             onBuffer(mono)
         }, "l'avvio del microfono")
         try CoreAudioSupport.check(AudioDeviceStart(deviceID, procID), "l'avvio del microfono")
+    }
+
+    private func preferredInputDevice() throws -> AudioObjectID {
+        let defaultInput = try CoreAudioSupport.defaultDevice(kAudioHardwarePropertyDefaultInputDevice)
+        guard CoreAudioSupport.isBluetooth(defaultInput), let builtIn = CoreAudioSupport.builtInInputDevice() else {
+            return defaultInput
+        }
+        Output.emit("notice", [
+            "message": "Uso il microfono del Mac invece di quello di \(CoreAudioSupport.name(defaultInput)): "
+                + "così in cuffia l'audio resta in alta qualità.",
+        ])
+        return builtIn
     }
 
     private func stopDevice() {

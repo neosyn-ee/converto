@@ -63,16 +63,28 @@ enum Engine {
         let results = Task { try await captions.consume(transcriber.results) }
         try await analyzer.start(inputSequence: inputs)
 
+        // Alla pausa si chiude subito la frase in corso, ma solo se ce n'è una: chiedere di chiudere
+        // quando è arrivato solo rumore fa rifiutare la sessione al riconoscimento (RecogRejected).
         let feeder = AudioFeeder(format: format, continuation: continuation) {
-            Task { try? await analyzer.finalize(through: nil) }
+            Task {
+                if await captions.hasVolatileResult {
+                    try? await analyzer.finalize(through: nil)
+                }
+            }
         }
 
         switch config.input {
         case .file(let path):
             try await feed(file: path, into: feeder, realtime: config.realtime)
             continuation.finish()
-            try await analyzer.finalizeAndFinishThroughEndOfInput()
-            try await results.value
+            if await captions.hasVolatileResult {
+                try await analyzer.finalizeAndFinishThroughEndOfInput()
+            } else {
+                await analyzer.cancelAndFinishNow() // file senza parlato: niente da chiudere
+            }
+            do {
+                try await results.value
+            } catch is CancellationError {}
             return
         case .microphone:
             let microphone = MicrophoneCapture(deviceUID: config.microphoneUID, onBuffer: feeder.feed)
@@ -207,6 +219,8 @@ actor Captions {
     /// Parole del risultato corrente già pubblicate e le ultime di esse, per ritrovare il punto di ripresa.
     private var publishedWords = 0
     private var anchor: [String] = []
+    /// C'è un risultato provvisorio non ancora chiuso dal riconoscimento?
+    private(set) var hasVolatileResult = false
 
     init(translator: Translator?) {
         self.translator = translator
@@ -218,6 +232,7 @@ actor Captions {
             let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
             var pending = Array(words[resumeIndex(in: words)...])
 
+            hasVolatileResult = !result.isFinal
             if result.isFinal {
                 publishedWords = 0
                 anchor = []

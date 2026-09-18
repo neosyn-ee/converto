@@ -8,6 +8,9 @@ const readline = require('node:readline');
 
 const STREAMS_BY_INPUT = { system: ['others'], mic: ['me'], both: ['me', 'others'] };
 const INPUT_BY_STREAM = { me: 'mic', others: 'system' };
+// Errori per cui riavviare non serve (permessi, lingua non supportata): fermano la sessione.
+const FATAL_ERRORS = new Set(['permission_denied', 'mic_permission_denied', 'speech_unsupported', 'speech_unavailable']);
+const MAX_RESTARTS_PER_MINUTE = 3;
 
 function createNativeEngine({ enginePath, onMessage, onStopped }) {
   let run = null;
@@ -15,16 +18,17 @@ function createNativeEngine({ enginePath, onMessage, onStopped }) {
   function start({ source, target, input }) {
     stop();
     const streams = STREAMS_BY_INPUT[input] ?? STREAMS_BY_INPUT.system;
-    const current = { streams, procs: [], listening: new Set(), reported: new Set() };
+    const current = { streams, source, target, procs: [], listening: new Set(), reported: new Set(), restarts: [] };
     run = current;
-    for (const stream of streams) spawnStream(current, stream, source, target);
+    for (const stream of streams) spawnStream(current, stream);
   }
 
-  function spawnStream(current, stream, source, target) {
-    const proc = spawn(enginePath, ['--source', source, '--target', target, '--input', INPUT_BY_STREAM[stream]], {
+  function spawnStream(current, stream) {
+    const proc = spawn(enginePath, ['--source', current.source, '--target', current.target, '--input', INPUT_BY_STREAM[stream]], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     current.procs.push(proc);
+    let failure = null;
 
     readline.createInterface({ input: proc.stdout }).on('line', (line) => {
       if (run !== current) return; // righe residue di un motore già fermato o sostituito
@@ -32,6 +36,10 @@ function createNativeEngine({ enginePath, onMessage, onStopped }) {
       try {
         message = JSON.parse(line);
       } catch {
+        return;
+      }
+      if (message.type === 'error' && !isWarning(message)) {
+        failure = message; // si decide all'uscita del processo se riavviare o fermare tutto
         return;
       }
       forward(current, stream, message);
@@ -42,10 +50,30 @@ function createNativeEngine({ enginePath, onMessage, onStopped }) {
     });
     proc.on('exit', () => {
       if (run !== current) return;
-      // Se un flusso si ferma (errore, permesso negato) si ferma tutta la sessione.
+      current.procs = current.procs.filter((other) => other !== proc);
+      // Un errore del riconoscimento durante una call lunga non deve chiudere tutto: si riavvia il flusso.
+      if (!FATAL_ERRORS.has(failure?.code) && canRestart(current)) {
+        onMessage({ type: 'notice', message: 'Il riconoscimento si è interrotto ed è ripartito da solo.' });
+        spawnStream(current, stream);
+        return;
+      }
+      if (failure) onMessage(failure);
       stop();
       onStopped();
     });
+  }
+
+  function canRestart(current) {
+    const now = Date.now();
+    current.restarts = current.restarts.filter((at) => now - at < 60_000);
+    if (current.restarts.length >= MAX_RESTARTS_PER_MINUTE) return false;
+    current.restarts.push(now);
+    return true;
+  }
+
+  /** Avvisi che non fermano il motore (es. lingue di traduzione non scaricate). */
+  function isWarning(message) {
+    return message.code === 'translation_not_installed' || message.code === 'translation_unsupported' || message.code === 'mic_silent';
   }
 
   function forward(current, stream, message) {
