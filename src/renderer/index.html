@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Converto</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="show-orig">
+  <div class="aurora" aria-hidden="true"><div class="aurora-glow"></div></div>
+
+  <header class="titlebar">
+    <div class="brand">
+      <span class="logo"><svg viewBox="0 0 24 24"><path d="M4 7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-6l-4 3.5V16a3 3 0 0 1-3-3z"/><path d="M8 9h8M8 12h5"/></svg></span>
+      Converto
+    </div>
+    <div class="title-tools">
+      <button id="font-down" class="icon-btn text" title="Testo più piccolo">A<small>−</small></button>
+      <button id="font-up" class="icon-btn text" title="Testo più grande">A<small>+</small></button>
+      <button id="orig-btn" class="icon-btn" title="Mostra il testo originale" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><path d="M3.5 6.5h9M8 4.5v2c0 4-2 7-4.5 8.5M6 10.5c1 2 3 3.5 5.5 4"/><path d="M12.5 19.5l3.8-8.5 3.8 8.5M13.8 16.8h5"/></svg>
+      </button>
+      <button id="folder-btn" class="icon-btn" title="Apri le trascrizioni salvate">
+        <svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
+      </button>
+      <button id="clear-btn" class="icon-btn" title="Pulisci lo schermo">
+        <svg viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V5h5v2M6.5 7l.8 12h9.4l.8-12"/></svg>
+      </button>
+      <span class="divider"></span>
+      <button id="overlay-btn" class="icon-btn" title="Modalità sottotitoli: sempre sopra le altre finestre">
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path class="fill" d="M7 14.5h10v1.8H7zM9 11.5h6v1.6H9z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <section class="setup">
+    <div class="lang-card">
+      <label class="lang from">
+        <span class="badge" id="source-badge">EN</span>
+        <span class="lang-text">
+          <span class="lang-caption" id="source-caption">Parlano in</span>
+          <span class="lang-name"><span id="source-name">Inglese</span><i class="chevron"></i></span>
+        </span>
+        <select id="source" aria-label="Lingua parlata"></select>
+      </label>
+      <button id="swap" class="swap" title="Inverti lingue">
+        <svg viewBox="0 0 24 24"><path d="M5 8.5h13.5L15 5M19 15.5H5.5L9 19"/></svg>
+      </button>
+      <label class="lang to">
+        <span class="badge" id="target-badge">IT</span>
+        <span class="lang-text">
+          <span class="lang-caption">Traduci in</span>
+          <span class="lang-name"><span id="target-name">Italiano</span><i class="chevron"></i></span>
+        </span>
+        <select id="target" aria-label="Traduci in"></select>
+      </label>
+    </div>
+
+    <div class="segmented" id="segmented" role="radiogroup" aria-label="Sorgente audio">
+      <button data-input="system" role="radio">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2.5"/><path d="M8.5 20h7M12 16.5V20"/></svg>
+        Audio del Mac
+      </button>
+      <button data-input="mic" role="radio">
+        <svg viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></svg>
+        Microfono
+      </button>
+    </div>
+  </section>
+
+  <main id="transcript" class="transcript">
+    <div id="banner" class="banner" hidden>
+      <span class="banner-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.3v.2"/></svg></span>
+      <div class="banner-body">
+        <p id="banner-text"></p>
+        <div class="banner-actions">
+          <button id="banner-action" class="pill-btn" hidden></button>
+          <button id="banner-close" class="link-btn">Chiudi</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="empty" class="empty">
+      <div class="orb">
+        <span class="orb-ring"></span>
+        <svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7.5v9M20 10.5v3"/></svg>
+      </div>
+      <h2>Pronto ad ascoltare</h2>
+      <p class="empty-text">Avvia, poi riproduci un video o entra in una call: la traduzione compare qui mentre parlano.</p>
+      <ol class="steps">
+        <li><b>1</b>Premi Avvia</li>
+        <li><b>2</b>Riproduci l'audio</li>
+        <li><b>3</b>Leggi la traduzione</li>
+      </ol>
+      <p class="privacy">
+        <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
+        Tutto in locale: l'audio non lascia il Mac
+      </p>
+    </div>
+
+    <ol id="entries" class="entries"></ol>
+    <div id="live" class="live" hidden>
+      <span class="live-tag">Sta parlando</span>
+      <p id="live-text" class="live-text"></p>
+    </div>
+  </main>
+  <button id="jump" class="jump" hidden>Nuove frasi ↓</button>
+
+  <footer class="dock">
+    <button id="toggle" class="record" title="Avvia (spazio)">
+      <span class="halo"></span>
+      <span class="halo second"></span>
+      <svg class="play" viewBox="0 0 24 24"><path d="M8.5 5.8v12.4a.8.8 0 0 0 1.2.7l10-6.2a.8.8 0 0 0 0-1.4l-10-6.2a.8.8 0 0 0-1.2.7z"/></svg>
+      <svg class="stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></svg>
+    </button>
+    <div class="status">
+      <div class="status-line"><span class="dot"></span><span id="status-text">Pronto</span></div>
+      <span id="status-sub">Audio del Mac · Inglese → Italiano</span>
+    </div>
+    <div class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <button id="exit-overlay" class="icon-btn overlay-only" title="Torna alla finestra completa (Esc)">
+      <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg>
+    </button>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

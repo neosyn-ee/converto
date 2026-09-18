@@ -1,0 +1,61 @@
+{
+  "name": "converto",
+  "productName": "Converto",
+  "version": "1.0.0",
+  "description": "Sottotitoli tradotti in tempo reale dall'audio del Mac, tutto in locale",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "build:engine": "sh scripts/build-engine.sh",
+    "build:icon": "sh scripts/build-icon.sh",
+    "start": "npm run build:engine && electron .",
+    "dist": "npm run build:engine && electron-builder --mac dmg --arm64",
+    "install-app": "npm run dist && sh scripts/install-app.sh"
+  },
+  "build": {
+    "appId": "com.neosyn.converto",
+    "productName": "Converto",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "engine/build/converto-engine",
+        "to": "bin/converto-engine"
+      }
+    ],
+    "asar": true,
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "26.0",
+      "extendInfo": {
+        "NSAudioCaptureUsageDescription": "Converto ascolta l'audio del Mac per trascriverlo e tradurlo in tempo reale. Nulla lascia il computer.",
+        "NSMicrophoneUsageDescription": "Converto usa il microfono solo se scegli \"Microfono\" come sorgente.",
+        "NSSpeechRecognitionUsageDescription": "Converto trascrive il parlato in locale con il riconoscimento vocale di macOS."
+      }
+    },
+    "dmg": {
+      "title": "Converto"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.4.2",
+    "electron-builder": "^26.15.3"
+  }
+}
