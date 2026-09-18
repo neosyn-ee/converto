@@ -1020,6 +1020,18 @@ body.listening .meter i {
   display: none;
 }
 
+/* ---------- Windows ---------- */
+
+/* A destra ci sono i pulsanti di sistema (riduci, ingrandisci, chiudi). */
+body.platform-win32 .titlebar {
+  padding: 0 146px 0 14px;
+}
+
+body.platform-win32.overlay .dock {
+  right: auto;
+  left: 12px;
+}
+
 /* ---------- Modalità sottotitoli ---------- */
 
 body.overlay {

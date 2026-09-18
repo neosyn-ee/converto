@@ -16,7 +16,33 @@ Il motore smette di alimentare il riconoscimento durante i silenzi e chiude la f
 
 La traduzione arriva **una sola volta per frase**: appena una frase è conclusa e stabile viene pubblicata e tradotta, senza versioni provvisorie da rileggere. Un rilevatore di voce (`SpeechDetector`) evita di trascrivere musica e rumore, e un filtro scarta ciò che il riconoscimento inventa (solo punteggiatura, parole ripetute a raffica).
 
-## Requisiti
+## Windows (branch `windows`, in sviluppo)
+
+Su Windows le API Apple non esistono: al posto del motore Swift c'è un **motore portabile** in JavaScript (`src/engines/portable/`).
+
+| Fase | Tecnologia |
+|---|---|
+| Cattura audio | Nel renderer: audio del PC in loopback (WASAPI, via `getDisplayMedia`) o microfono, portato a 16 kHz da un AudioWorklet |
+| Rilevamento voce | Silero VAD |
+| Trascrizione | NVIDIA Parakeet v3 (sherpa-onnx), 25 lingue europee. Ogni ~1,5 s decodifica il parlato in corso e pubblica le frasi già concluse |
+| Traduzione | Opus-MT (transformers.js), frase per frase; passa dall'inglese se manca il modello diretto |
+
+Riconoscimento e traduzione girano in due `utilityProcess` separati: le due librerie portano versioni diverse di ONNX Runtime, che nello stesso processo andrebbero in conflitto.
+Al primo avvio l'app scarica i modelli (circa 800 MB per inglese → italiano) in `%LOCALAPPDATA%\Converto\models`.
+
+**Installer:** a ogni push sul branch `windows` il workflow *Installer Windows* crea `Converto-Setup-<versione>.exe` (GitHub → Actions → ultima esecuzione → Artifacts). L'app non è firmata: al primo avvio SmartScreen chiede conferma (*Ulteriori informazioni → Esegui comunque*).
+
+**Sviluppo su Windows:** Node 20+, poi `npm install`, `npm start`, `npm run dist:win`.
+
+**Prove senza Windows** (anche su Mac):
+
+```bash
+npm run try:portable -- audio.wav --target it        # solo motore, da file
+npx electron scripts/selftest-portable.js audio.wav  # app completa con microfono finto
+CONVERTO_ENGINE=portable npm start                   # app su Mac con il motore portabile
+```
+
+## Requisiti (macOS)
 
 - macOS 26 su Apple Silicon, Xcode (per `swiftc`)
 - Node 20+

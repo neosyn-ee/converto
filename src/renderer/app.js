@@ -22,6 +22,9 @@ const TARGETS = [
   ['ja', 'Giapponese'],
 ];
 const NO_TRANSLATION = 'none';
+// Lingue supportate dal motore portabile (Windows): Parakeet v3 e i modelli Opus-MT disponibili.
+const PORTABLE_SOURCES = ['en-US', 'en-GB', 'it-IT', 'fr-FR', 'es-ES', 'de-DE', 'pt-BR'];
+const PORTABLE_TARGETS = ['it', 'en', 'fr', 'es', 'de', 'pt', 'zh'];
 const INPUT_LABELS = { system: 'Audio del Mac', mic: 'Microfono' };
 const DEFAULT_SETTINGS = { mode: 'translate', source: 'en-US', target: 'it', input: 'system', showOriginal: true, scale: 1 };
 const MAX_ENTRIES = 400;
@@ -72,9 +75,14 @@ const el = {
   statusSub: $('status-sub'),
   origBtn: $('orig-btn'),
   toast: $('toast'),
+  systemLabel: $('system-label'),
+  privacyText: $('privacy-text'),
 };
 
 const settings = loadSettings();
+const platform = { captureInRenderer: false };
+let sources = SOURCES;
+let targets = TARGETS;
 const state = {
   running: false,
   listening: false,
@@ -127,17 +135,17 @@ function nameOf(list, code) {
 }
 
 function describeSetup() {
-  const source = nameOf(SOURCES, settings.source).replace(/ \(.*\)/, '');
+  const source = nameOf(sources, settings.source).replace(/ \(.*\)/, '');
   if (isTranscribing()) {
     return `${INPUT_LABELS[settings.input]} · Trascrizione in ${source.toLowerCase()}`;
   }
-  return `${INPUT_LABELS[settings.input]} · ${source} → ${nameOf(TARGETS, settings.target)}`;
+  return `${INPUT_LABELS[settings.input]} · ${source} → ${nameOf(targets, settings.target)}`;
 }
 
 function applySettings() {
   el.source.value = settings.source;
   el.target.value = settings.target;
-  const [sourceLanguage, region] = nameOf(SOURCES, settings.source).split(/ \((.*)\)/);
+  const [sourceLanguage, region] = nameOf(sources, settings.source).split(/ \((.*)\)/);
   el.sourceBadge.textContent = settings.source.split('-')[0].toUpperCase();
   el.sourceName.textContent = sourceLanguage;
   el.sourceCaption.textContent = region ? `Parlano in · ${region}` : 'Parlano in';
@@ -147,7 +155,7 @@ function applySettings() {
     tab.setAttribute('aria-selected', String(tab.dataset.mode === settings.mode));
   }
   el.targetBadge.textContent = transcribing ? 'TXT' : settings.target.toUpperCase();
-  el.targetName.textContent = transcribing ? 'Testo originale' : nameOf(TARGETS, settings.target);
+  el.targetName.textContent = transcribing ? 'Testo originale' : nameOf(targets, settings.target);
   el.targetCaption.textContent = transcribing ? 'Ottieni' : 'Traduci in';
   el.target.disabled = transcribing;
   el.swap.disabled = transcribing;
@@ -181,6 +189,7 @@ function setStatus(text, sub = describeSetup()) {
 function setRunning(running) {
   state.running = running;
   if (!running) {
+    if (platform.captureInRenderer) audioCapture.stop();
     state.listening = false;
     state.live = null;
     setLevel(0);
@@ -195,6 +204,10 @@ function setRunning(running) {
 }
 
 function start() {
+  if (platform.captureInRenderer) {
+    // Parte subito, dentro il clic: il sistema chiede un gesto dell'utente per catturare l'audio.
+    audioCapture.start(settings.input).catch(onCaptureError);
+  }
   hideBanner();
   state.failed = false;
   el.body.classList.remove('failed');
@@ -211,6 +224,20 @@ function start() {
 
 function stop() {
   window.converto.stop();
+}
+
+function onCaptureError(error) {
+  window.converto.stop();
+  if (settings.input === 'mic' && error.name === 'NotAllowedError') {
+    showError({
+      code: 'mic_permission_denied',
+      message: "Accesso al microfono negato. In Impostazioni → Privacy e sicurezza → Microfono consenti l'accesso alle app desktop.",
+    });
+  } else if (error.name === 'NotFoundError') {
+    showError({ code: 'capture_failed', message: 'Nessun microfono trovato.' });
+  } else {
+    showError({ code: 'capture_failed', message: `Impossibile catturare l'audio: ${error.message}` });
+  }
 }
 
 function setLevel(value) {
@@ -389,7 +416,7 @@ window.converto.onEngine((message) => {
     case 'final':
       if (state.bannerCode === 'mic_silent') hideBanner(); // l'audio in realtà arriva
       state.lastFinalId = message.id;
-      state.live = null;
+      if (state.live && state.live.id <= message.id) state.live = null;
       addEntry(message);
       queueLive();
       break;
@@ -424,8 +451,8 @@ for (const button of el.inputs) {
 
 el.swap.addEventListener('click', () => {
   const sourceLanguage = settings.source.split('-')[0];
-  const newSource = SOURCES.find(([code]) => code.startsWith(`${settings.target}-`))?.[0];
-  if (!newSource || !TARGETS.some(([code]) => code === sourceLanguage)) return;
+  const newSource = sources.find(([code]) => code.startsWith(`${settings.target}-`))?.[0];
+  if (!newSource || !targets.some(([code]) => code === sourceLanguage)) return;
   settings.source = newSource;
   updateSetting('target', sourceLanguage);
 });
@@ -480,6 +507,27 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-fillSelect(el.source, SOURCES, settings.source);
-fillSelect(el.target, TARGETS, settings.target);
+// Differenze tra macOS (motore Swift) e Windows (motore portabile).
+function applyPlatform(info) {
+  platform.captureInRenderer = info.captureInRenderer;
+  el.body.classList.add(`platform-${info.platform}`);
+  if (info.platform !== 'darwin') {
+    INPUT_LABELS.system = 'Audio del PC';
+    el.systemLabel.textContent = 'Audio del PC';
+    el.privacyText.textContent = "Tutto in locale: l'audio non lascia il PC";
+  }
+  if (info.captureInRenderer) {
+    sources = SOURCES.filter(([code]) => PORTABLE_SOURCES.includes(code));
+    targets = TARGETS.filter(([code]) => PORTABLE_TARGETS.includes(code));
+    if (!PORTABLE_SOURCES.includes(settings.source)) settings.source = DEFAULT_SETTINGS.source;
+    if (!PORTABLE_TARGETS.includes(settings.target)) settings.target = DEFAULT_SETTINGS.target;
+  }
+  fillSelect(el.source, sources, settings.source);
+  fillSelect(el.target, targets, settings.target);
+  applySettings();
+}
+
+fillSelect(el.source, sources, settings.source);
+fillSelect(el.target, targets, settings.target);
 applySettings();
+window.converto.appInfo().then(applyPlatform);

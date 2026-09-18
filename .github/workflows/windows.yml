@@ -1,0 +1,30 @@
+name: Installer Windows
+
+# Crea l'installer Windows su una macchina Windows di GitHub a ogni push sul branch windows.
+# L'installer si scarica dalla pagina dell'esecuzione (sezione "Artifacts").
+on:
+  push:
+    branches: [windows]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Crea l'installer
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Converto-Windows
+          path: dist/*.exe
+          retention-days: 14
