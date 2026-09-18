@@ -20,6 +20,9 @@
       <button id="orig-btn" class="icon-btn" title="Mostra il testo originale" aria-pressed="true">
         <svg viewBox="0 0 24 24"><path d="M3.5 6.5h9M8 4.5v2c0 4-2 7-4.5 8.5M6 10.5c1 2 3 3.5 5.5 4"/><path d="M12.5 19.5l3.8-8.5 3.8 8.5M13.8 16.8h5"/></svg>
       </button>
+      <button id="copy-btn" class="icon-btn" title="Copia la trascrizione, pronta da incollare in un'AI">
+        <svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></svg>
+      </button>
       <button id="folder-btn" class="icon-btn" title="Apri le trascrizioni salvate">
         <svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
       </button>
@@ -34,6 +37,17 @@
   </header>
 
   <section class="setup">
+    <nav class="modes" role="tablist" aria-label="Modalità">
+      <button class="mode-tab" role="tab" data-mode="translate" title="Traduzione (⌘1)">
+        <span class="mode-icon"><svg viewBox="0 0 24 24"><path d="M3.5 6.5h9M8 4.5v2c0 4-2 7-4.5 8.5M6 10.5c1 2 3 3.5 5.5 4"/><path d="M12.5 19.5l3.8-8.5 3.8 8.5M13.8 16.8h5"/></svg></span>
+        <span class="mode-text"><span class="mode-title">Traduzione</span><span class="mode-sub">Sottotitoli tradotti</span></span>
+      </button>
+      <button class="mode-tab" role="tab" data-mode="transcribe" title="Trascrizione (⌘2)">
+        <span class="mode-icon"><svg viewBox="0 0 24 24"><path d="M7.5 3.5h6.5l4.5 4.5v11a1.5 1.5 0 0 1-1.5 1.5h-9.5A1.5 1.5 0 0 1 6 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5V8.5h5M9 12.5h6M9 16h4"/></svg></span>
+        <span class="mode-text"><span class="mode-title">Trascrizione</span><span class="mode-sub">Testo per l'AI</span></span>
+      </button>
+    </nav>
+
     <div class="lang-card">
       <label class="lang from">
         <span class="badge" id="source-badge">EN</span>
@@ -44,12 +58,13 @@
         <select id="source" aria-label="Lingua parlata"></select>
       </label>
       <button id="swap" class="swap" title="Inverti lingue">
-        <svg viewBox="0 0 24 24"><path d="M5 8.5h13.5L15 5M19 15.5H5.5L9 19"/></svg>
+        <svg class="icon-swap" viewBox="0 0 24 24"><path d="M5 8.5h13.5L15 5M19 15.5H5.5L9 19"/></svg>
+        <svg class="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg>
       </button>
       <label class="lang to">
         <span class="badge" id="target-badge">IT</span>
         <span class="lang-text">
-          <span class="lang-caption">Traduci in</span>
+          <span class="lang-caption" id="target-caption">Traduci in</span>
           <span class="lang-name"><span id="target-name">Italiano</span><i class="chevron"></i></span>
         </span>
         <select id="target" aria-label="Traduci in"></select>
@@ -85,12 +100,15 @@
         <span class="orb-ring"></span>
         <svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7.5v9M20 10.5v3"/></svg>
       </div>
-      <h2>Pronto ad ascoltare</h2>
-      <p class="empty-text">Avvia, poi riproduci un video o entra in una call: la traduzione compare qui mentre parlano.</p>
+      <h2 class="only-translate">Pronto a tradurre</h2>
+      <h2 class="only-transcribe">Pronto a trascrivere</h2>
+      <p class="empty-text only-translate">Avvia, poi riproduci un video o entra in una call: la traduzione compare qui mentre parlano.</p>
+      <p class="empty-text only-transcribe">Avvia e lascia parlare: il testo originale compare qui. Alla fine copialo e chiedi all'AI un riassunto, un verbale o le azioni da fare.</p>
       <ol class="steps">
         <li><b>1</b>Premi Avvia</li>
         <li><b>2</b>Riproduci l'audio</li>
-        <li><b>3</b>Leggi la traduzione</li>
+        <li class="only-translate"><b>3</b>Leggi la traduzione</li>
+        <li class="only-transcribe"><b>3</b>Copia per l'AI</li>
       </ol>
       <p class="privacy">
         <svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
@@ -105,6 +123,7 @@
     </div>
   </main>
   <button id="jump" class="jump" hidden>Nuove frasi ↓</button>
+  <div id="toast" class="toast" role="status" hidden></div>
 
   <footer class="dock">
     <button id="toggle" class="record" title="Avvia (spazio)">
@@ -117,7 +136,12 @@
       <div class="status-line"><span class="dot"></span><span id="status-text">Pronto</span></div>
       <span id="status-sub">Audio del Mac · Inglese → Italiano</span>
     </div>
-    <div class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <button id="ai-copy" class="ai-copy only-transcribe" title="Copia tutta la trascrizione negli appunti" disabled>
+      <svg viewBox="0 0 24 24"><path d="M11 3.5l1.7 4.6 4.6 1.7-4.6 1.7L11 16.1l-1.7-4.6-4.6-1.7 4.6-1.7z"/><path d="M18 14.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+      <span>Copia per l'AI</span>
+      <b id="ai-count">0</b>
+    </button>
+    <div class="meter only-translate" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
     <button id="exit-overlay" class="icon-btn overlay-only" title="Torna alla finestra completa (Esc)">
       <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg>
     </button>

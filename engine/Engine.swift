@@ -5,7 +5,7 @@ import Speech
 /// Motore di Converto: cattura audio → trascrizione (SpeechAnalyzer) → traduzione.
 /// Riceve la configurazione da riga di comando e comunica con Electron via JSON su stdout.
 ///
-///   converto-engine --source en-US --target it --input system|mic
+///   converto-engine --source en-US --target it|none --input system|mic [--mic <UID dispositivo>]
 ///   converto-engine --source en-US --target it --file audio.wav [--realtime]
 @main
 enum Engine {
@@ -34,9 +34,8 @@ enum Engine {
         Output.status("preparing", "Preparo il riconoscimento vocale…")
 
         let sourceLanguage = Locale(identifier: config.source).language.languageCode?.identifier ?? config.source
-        let translator = sourceLanguage == config.target
-            ? nil
-            : await Translator.make(from: sourceLanguage, to: config.target)
+        let transcribeOnly = config.target == Config.noTranslation || config.target == sourceLanguage
+        let translator = transcribeOnly ? nil : await Translator.make(from: sourceLanguage, to: config.target)
 
         guard SpeechTranscriber.isAvailable else {
             throw EngineError(code: "speech_unavailable", message: "Il riconoscimento vocale non è disponibile su questo Mac.")
@@ -76,7 +75,7 @@ enum Engine {
             try await results.value
             return
         case .microphone:
-            let microphone = MicrophoneCapture(onBuffer: feeder.feed)
+            let microphone = MicrophoneCapture(deviceUID: config.microphoneUID, onBuffer: feeder.feed)
             try await microphone.start()
             captureSource = microphone
         case .system:
@@ -156,6 +155,9 @@ enum Engine {
 }
 
 struct Config {
+    /// `--target none`: solo trascrizione, senza traduzione.
+    static let noTranslation = "none"
+
     enum Input {
         case system, microphone, file(String)
     }
@@ -163,6 +165,7 @@ struct Config {
     var source = "en-US"
     var target = "it"
     var input = Input.system
+    var microphoneUID: String?
     var realtime = false
 
     static func parse() -> Config {
@@ -175,6 +178,7 @@ struct Config {
             case "--input": config.input = arguments.next() == "mic" ? .microphone : .system
             case "--file": config.input = .file(arguments.next() ?? "")
             case "--realtime": config.realtime = true
+            case "--mic": config.microphoneUID = arguments.next()
             default: break
             }
         }

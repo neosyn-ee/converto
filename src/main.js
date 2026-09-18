@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, shell } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, screen, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -17,6 +17,7 @@ const SETTINGS_PANES = {
 };
 
 const OVERLAY_SIZE = { width: 760, height: 170 };
+const NO_TRANSLATION = 'none';
 
 let win = null;
 let engine = null;
@@ -109,7 +110,7 @@ function send(message) {
 // ---------- Motore ----------
 
 function startEngine({ source, target, input }) {
-  stopEngine();
+  stopEngine({ restarting: true });
   const proc = spawn(ENGINE_PATH, ['--source', source, '--target', target, '--input', input], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -117,6 +118,7 @@ function startEngine({ source, target, input }) {
   transcript = { source, target, stream: null };
 
   readline.createInterface({ input: proc.stdout }).on('line', (line) => {
+    if (engine !== proc) return; // righe residue di un motore già fermato o sostituito
     let message;
     try {
       message = JSON.parse(line);
@@ -136,13 +138,14 @@ function startEngine({ source, target, input }) {
   });
 }
 
-function stopEngine() {
+// Con `restarting` il motore viene solo sostituito: l'interfaccia deve restare "in ascolto".
+function stopEngine({ restarting = false } = {}) {
   if (!engine) return;
   const proc = engine;
   engine = null;
   proc.kill('SIGTERM');
   closeTranscript();
-  send({ type: 'stopped' });
+  if (!restarting) send({ type: 'stopped' });
 }
 
 // ---------- Trascrizioni su file ----------
@@ -157,7 +160,9 @@ function writeTranscript({ text, translation }) {
     fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
     const now = new Date();
     const stamp = now.toLocaleString('sv-SE').slice(0, 16).replace(':', '.');
-    const pair = `${languageName(transcript.source)} → ${languageName(transcript.target)}`;
+    const pair = transcript.target === NO_TRANSLATION
+      ? `Trascrizione in ${languageName(transcript.source)}`
+      : `${languageName(transcript.source)} → ${languageName(transcript.target)}`;
     transcript.stream = fs.createWriteStream(path.join(TRANSCRIPTS_DIR, `${stamp}.md`), { flags: 'a' });
     transcript.stream.write(`# Converto · ${now.toLocaleString('it-IT')} · ${pair}\n\n`);
   }
@@ -180,6 +185,7 @@ ipcMain.on('open:transcripts', () => {
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
   shell.openPath(TRANSCRIPTS_DIR);
 });
+ipcMain.on('clipboard:write', (_event, text) => clipboard.writeText(String(text)));
 ipcMain.on('open:settings', (_event, pane) => {
   if (SETTINGS_PANES[pane]) shell.openExternal(SETTINGS_PANES[pane]);
 });
@@ -198,5 +204,5 @@ if (!app.requestSingleInstanceLock()) {
     if (!win) createWindow();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('will-quit', stopEngine);
+  app.on('will-quit', () => stopEngine());
 }

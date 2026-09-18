@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('converto', {
   setOverlay: (on) => ipcRenderer.send('window:overlay', on),
   openTranscripts: () => ipcRenderer.send('open:transcripts'),
   openSettings: (pane) => ipcRenderer.send('open:settings', pane),
+  copyText: (text) => ipcRenderer.send('clipboard:write', text),
   onEngine: (callback) => ipcRenderer.on('engine', (_event, message) => callback(message)),
   onOverlay: (callback) => ipcRenderer.on('overlay', (_event, on) => callback(on)),
 });

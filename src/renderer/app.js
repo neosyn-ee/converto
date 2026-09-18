@@ -21,8 +21,9 @@ const TARGETS = [
   ['zh', 'Cinese'],
   ['ja', 'Giapponese'],
 ];
+const NO_TRANSLATION = 'none';
 const INPUT_LABELS = { system: 'Audio del Mac', mic: 'Microfono' };
-const DEFAULT_SETTINGS = { source: 'en-US', target: 'it', input: 'system', showOriginal: true, scale: 1 };
+const DEFAULT_SETTINGS = { mode: 'translate', source: 'en-US', target: 'it', input: 'system', showOriginal: true, scale: 1 };
 const MAX_ENTRIES = 400;
 const SILENCE_HINT_MS = 8000;
 const SCALE_RANGE = [0.8, 1.7];
@@ -35,9 +36,10 @@ const ERROR_ACTIONS = {
     hint: ' Attiva Converto in Privacy e sicurezza → Registrazione schermo e audio di sistema, poi premi di nuovo Avvia.',
   },
   mic_permission_denied: { label: 'Apri Impostazioni', pane: 'microphone' },
+  mic_silent: { label: 'Apri Impostazioni', pane: 'microphone' },
   translation_not_installed: { label: 'Scarica le lingue', pane: 'translation' },
 };
-const NON_FATAL_ERRORS = new Set(['translation_not_installed', 'translation_unsupported']);
+const NON_FATAL_ERRORS = new Set(['translation_not_installed', 'translation_unsupported', 'mic_silent']);
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -50,7 +52,11 @@ const el = {
   sourceCaption: $('source-caption'),
   targetBadge: $('target-badge'),
   targetName: $('target-name'),
+  targetCaption: $('target-caption'),
   segmented: $('segmented'),
+  modeTabs: [...document.querySelectorAll('[data-mode]')],
+  aiCopy: $('ai-copy'),
+  aiCount: $('ai-count'),
   inputs: [...document.querySelectorAll('[data-input]')],
   transcript: $('transcript'),
   entries: $('entries'),
@@ -65,6 +71,7 @@ const el = {
   statusText: $('status-text'),
   statusSub: $('status-sub'),
   origBtn: $('orig-btn'),
+  toast: $('toast'),
 };
 
 const settings = loadSettings();
@@ -77,16 +84,30 @@ const state = {
   lastSoundAt: 0,
   renderQueued: false,
   bannerPane: null,
+  bannerCode: null,
+  finals: [],
+  toastTimer: 0,
 };
 
 // ---------- Impostazioni ----------
 
 function loadSettings() {
+  let saved = {};
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('settings') || '{}') };
+    saved = JSON.parse(localStorage.getItem('settings') || '{}');
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    // preferenze predefinite
   }
+  if (saved.target === NO_TRANSLATION) {
+    // versione precedente: la sola trascrizione era una voce del menu lingue
+    saved.mode = 'transcribe';
+    saved.target = DEFAULT_SETTINGS.target;
+  }
+  return { ...DEFAULT_SETTINGS, ...saved };
+}
+
+function isTranscribing() {
+  return settings.mode === 'transcribe';
 }
 
 function saveSettings() {
@@ -107,6 +128,9 @@ function nameOf(list, code) {
 
 function describeSetup() {
   const source = nameOf(SOURCES, settings.source).replace(/ \(.*\)/, '');
+  if (isTranscribing()) {
+    return `${INPUT_LABELS[settings.input]} · Trascrizione in ${source.toLowerCase()}`;
+  }
   return `${INPUT_LABELS[settings.input]} · ${source} → ${nameOf(TARGETS, settings.target)}`;
 }
 
@@ -117,8 +141,18 @@ function applySettings() {
   el.sourceBadge.textContent = settings.source.split('-')[0].toUpperCase();
   el.sourceName.textContent = sourceLanguage;
   el.sourceCaption.textContent = region ? `Parlano in · ${region}` : 'Parlano in';
-  el.targetBadge.textContent = settings.target.toUpperCase();
-  el.targetName.textContent = nameOf(TARGETS, settings.target);
+  const transcribing = isTranscribing();
+  el.body.classList.toggle('mode-transcribe', transcribing);
+  for (const tab of el.modeTabs) {
+    tab.setAttribute('aria-selected', String(tab.dataset.mode === settings.mode));
+  }
+  el.targetBadge.textContent = transcribing ? 'TXT' : settings.target.toUpperCase();
+  el.targetName.textContent = transcribing ? 'Testo originale' : nameOf(TARGETS, settings.target);
+  el.targetCaption.textContent = transcribing ? 'Ottieni' : 'Traduci in';
+  el.target.disabled = transcribing;
+  el.swap.disabled = transcribing;
+  el.swap.title = transcribing ? '' : 'Inverti lingue';
+  el.origBtn.disabled = transcribing;
   el.segmented.dataset.active = settings.input;
   for (const button of el.inputs) {
     button.setAttribute('aria-checked', String(button.dataset.input === settings.input));
@@ -155,7 +189,9 @@ function setRunning(running) {
   }
   el.body.classList.toggle('running', running);
   el.body.classList.toggle('listening', running && state.listening);
-  el.toggle.title = running ? 'Ferma' : 'Avvia';
+  const label = running ? 'Ferma (spazio)' : 'Avvia (spazio)';
+  el.toggle.title = label;
+  el.toggle.setAttribute('aria-label', label);
 }
 
 function start() {
@@ -166,7 +202,11 @@ function start() {
   state.lastFinalId = -1;
   setRunning(true);
   setStatus('Avvio…');
-  window.converto.start({ source: settings.source, target: settings.target, input: settings.input });
+  window.converto.start({
+    source: settings.source,
+    target: isTranscribing() ? NO_TRANSLATION : settings.target,
+    input: settings.input,
+  });
 }
 
 function stop() {
@@ -213,12 +253,19 @@ function addEntry({ text, translation }) {
   const item = document.createElement('li');
   item.className = 'entry';
   const time = new Date().toLocaleTimeString('it-IT');
+  state.finals.push({ time, text, translation });
   item.append(paragraph('meta', time), paragraph('tr', translation ?? text));
   if (translation) item.append(paragraph('orig', text));
   el.entries.append(item);
   while (el.entries.childElementCount > MAX_ENTRIES) el.entries.firstElementChild.remove();
   el.empty.hidden = true;
+  updateCopyCount();
   followScroll(wasAtBottom);
+}
+
+function updateCopyCount() {
+  el.aiCount.textContent = state.finals.length;
+  el.aiCopy.disabled = state.finals.length === 0;
 }
 
 function queueLive() {
@@ -249,10 +296,38 @@ function renderLive() {
 
 function clearTranscript() {
   el.entries.replaceChildren();
+  state.finals = [];
+  updateCopyCount();
   state.live = null;
   queueLive();
   el.empty.hidden = false;
   el.jump.hidden = true;
+}
+
+// Testo semplice con orari: in modalità traduzione riporta sia l'originale sia la traduzione.
+function transcriptText() {
+  return state.finals
+    .map(({ time, text, translation }) => (translation ? `[${time}] ${text}\n           → ${translation}` : `[${time}] ${text}`))
+    .join('\n');
+}
+
+function copyTranscript() {
+  if (!state.finals.length) {
+    showToast('Ancora niente da copiare');
+    return;
+  }
+  window.converto.copyText(transcriptText());
+  const count = state.finals.length;
+  showToast(`Copiate ${count} ${count === 1 ? 'frase' : 'frasi'}: incollale nell'AI che preferisci`);
+}
+
+function showToast(message) {
+  el.toast.textContent = message;
+  el.toast.hidden = false;
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => {
+    el.toast.hidden = true;
+  }, 2400);
 }
 
 // ---------- Messaggi ----------
@@ -263,6 +338,7 @@ function showBanner(kind, text, action) {
   el.bannerAction.hidden = !action;
   if (action) el.bannerAction.textContent = action.label;
   state.bannerPane = action?.pane ?? null;
+  state.bannerCode = null;
   el.banner.hidden = false;
   el.transcript.scrollTop = 0;
 }
@@ -275,6 +351,7 @@ function showError({ code, message }) {
   const action = ERROR_ACTIONS[code];
   const fatal = !NON_FATAL_ERRORS.has(code);
   showBanner(fatal ? 'error' : 'info', message + (action?.hint ?? ''), action);
+  state.bannerCode = code;
   if (fatal) {
     state.failed = true;
     el.body.classList.add('failed');
@@ -285,6 +362,7 @@ function showError({ code, message }) {
 window.converto.onEngine((message) => {
   switch (message.type) {
     case 'status':
+      if (!state.running) setRunning(true); // il motore è attivo: il pulsante deve poterlo fermare
       if (message.state === 'listening') {
         state.listening = true;
         state.lastSoundAt = Date.now();
@@ -309,6 +387,7 @@ window.converto.onEngine((message) => {
       queueLive();
       break;
     case 'final':
+      if (state.bannerCode === 'mic_silent') hideBanner(); // l'audio in realtà arriva
       state.lastFinalId = message.id;
       state.live = null;
       addEntry(message);
@@ -366,6 +445,15 @@ el.origBtn.addEventListener('click', () => {
   applySettings();
 });
 
+$('copy-btn').addEventListener('click', copyTranscript);
+el.aiCopy.addEventListener('click', copyTranscript);
+for (const tab of el.modeTabs) {
+  tab.addEventListener('click', () => selectMode(tab.dataset.mode));
+}
+
+function selectMode(mode) {
+  if (mode !== settings.mode) updateSetting('mode', mode);
+}
 $('folder-btn').addEventListener('click', () => window.converto.openTranscripts());
 $('clear-btn').addEventListener('click', clearTranscript);
 $('overlay-btn').addEventListener('click', () => window.converto.setOverlay(true));
@@ -381,7 +469,10 @@ el.transcript.addEventListener('scroll', () => {
 }, { passive: true });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && el.body.classList.contains('overlay')) {
+  if (event.metaKey && (event.key === '1' || event.key === '2')) {
+    event.preventDefault();
+    selectMode(event.key === '1' ? 'translate' : 'transcribe');
+  } else if (event.key === 'Escape' && el.body.classList.contains('overlay')) {
     window.converto.setOverlay(false);
   } else if (event.code === 'Space' && event.target === document.body) {
     event.preventDefault();

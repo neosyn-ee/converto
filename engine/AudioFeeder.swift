@@ -15,6 +15,8 @@ final class AudioFeeder {
     private var converter: AVAudioConverter?
     private var silentSeconds = 0.0
     private var paused = false
+    /// C'è stato suono dall'ultima chiusura di frase? Senza, chiedere di chiudere fa fallire il riconoscimento.
+    private var soundSinceLastPause = false
     private var levelPeak: Float = 0
     private var lastLevel: Float = -1
     private var lastLevelAt = Date.distantPast
@@ -36,13 +38,17 @@ final class AudioFeeder {
             if silentSeconds >= Self.pauseAfterSeconds {
                 if !paused {
                     paused = true
-                    onPause()
+                    if soundSinceLastPause {
+                        soundSinceLastPause = false
+                        onPause()
+                    }
                 }
                 return
             }
         } else {
             silentSeconds = 0
             paused = false
+            soundSinceLastPause = true
         }
 
         // Il buffer del tap è valido solo durante la callback: la conversione ne produce una copia.
