@@ -5,6 +5,7 @@
 const os = require('node:os');
 const { SPEECH_LANGUAGES, ensureModels, translationRoute } = require('./models');
 const { cleanTranscript } = require('./text');
+const { createEchoGate } = require('./echo-gate');
 
 const NO_TRANSLATION = 'none';
 const LEVEL_INTERVAL_MS = 120;
@@ -26,9 +27,11 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
   const threads = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
   let session = null;
 
-  async function start({ source, target }) {
+  async function start({ source, target, input }) {
     stop();
     const current = {
+      // Con entrambi i flussi, l'audio del PC fa da riferimento per togliere l'eco dal microfono.
+      echoGate: input === 'both' ? createEchoGate() : null,
       workers: [],
       ready: false,
       backlog: [],
@@ -187,6 +190,18 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
     const current = session;
     if (!current) return;
     reportLevel(current, stream, samples);
+    const gate = current.echoGate;
+    if (!gate) {
+      forwardAudio(current, stream, samples);
+    } else if (stream === 'others') {
+      gate.observeReference(samples, Date.now() / 1000);
+      forwardAudio(current, stream, samples);
+    } else {
+      gate.process(samples, Date.now() / 1000, (filtered) => forwardAudio(current, stream, filtered));
+    }
+  }
+
+  function forwardAudio(current, stream, samples) {
     if (current.ready) {
       current.asr.post({ type: 'audio', stream, samples });
       return;

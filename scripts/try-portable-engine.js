@@ -2,6 +2,7 @@
 // Prova il motore portabile (quello usato su Windows) su un file WAV, senza Electron.
 //
 //   node scripts/try-portable-engine.js audio.wav [--source en-US] [--target it|none] [--fast]
+//   node scripts/try-portable-engine.js altri.wav --me io.wav      (prova di "Io + altri")
 //
 // I modelli vengono scaricati (o riusati) nella stessa cartella dell'app.
 const { fork } = require('node:child_process');
@@ -18,7 +19,8 @@ const option = (name, fallback) => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : fallback;
 };
-const file = args.find((arg) => arg.endsWith('.wav'));
+const meFile = option('--me', null);
+const file = args.find((arg) => arg.endsWith('.wav') && arg !== meFile);
 if (!file) {
   console.error('Uso: node scripts/try-portable-engine.js audio.wav [--source en-US] [--target it|none] [--fast]');
   process.exit(1);
@@ -49,7 +51,8 @@ const engine = createPortableEngine({
       return;
     }
     if (message.type === 'final') {
-      console.log(`${elapsed()}  ${message.text}${message.translation ? `\n         → ${message.translation}` : ''}`);
+      const who = meFile ? `${message.stream === 'me' ? 'IO   ' : 'ALTRI'} ` : '';
+      console.log(`${elapsed()}  ${who}${message.text}${message.translation ? `\n         → ${message.translation}` : ''}`);
       return;
     }
     console.log(`${elapsed()}  [${message.type}] ${message.state ?? message.code ?? ''} ${message.message ?? ''}`);
@@ -58,16 +61,23 @@ const engine = createPortableEngine({
   onStopped: () => process.exit(1),
 });
 
-engine.start({ source: option('--source', 'en-US'), target: option('--target', 'it') });
+engine.start({ source: option('--source', 'en-US'), target: option('--target', 'it'), input: meFile ? 'both' : 'system' });
+
+function load(path) {
+  const wave = sherpa.readWave(path);
+  return resample(wave.samples, wave.sampleRate);
+}
 
 async function play() {
-  const wave = sherpa.readWave(file);
-  const samples = resample(wave.samples, wave.sampleRate);
-  const padded = new Float32Array(samples.length + SAMPLE_RATE * 2); // 2 s di silenzio finale chiudono l'ultima frase
-  padded.set(samples);
+  const streams = meFile ? { others: load(file), me: load(meFile) } : { [option('--stream', 'others')]: load(file) };
+  const length = Math.max(...Object.values(streams).map((samples) => samples.length)) + SAMPLE_RATE * 2; // 2 s di silenzio finale
   const realtime = !args.includes('--fast');
-  for (let offset = 0; offset < padded.length; offset += CHUNK) {
-    engine.pushAudio(option('--stream', 'others'), padded.slice(offset, offset + CHUNK));
+  for (let offset = 0; offset < length; offset += CHUNK) {
+    for (const [stream, samples] of Object.entries(streams)) {
+      const chunk = new Float32Array(CHUNK);
+      chunk.set(samples.subarray(offset, offset + CHUNK));
+      engine.pushAudio(stream, chunk);
+    }
     if (realtime) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   setTimeout(() => {
