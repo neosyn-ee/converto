@@ -80,6 +80,10 @@
         <svg viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></svg>
         Microfono
       </button>
+      <button data-input="both" role="radio" title="Microfono (Io) e audio del Mac (Altri) insieme: per le call">
+        <svg viewBox="0 0 24 24"><circle cx="8.5" cy="8" r="3"/><path d="M3 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><circle cx="16.5" cy="9" r="2.5"/><path d="M15.5 14.2c3 .2 5.5 2 5.5 4.8"/></svg>
+        Io + altri
+      </button>
     </div>
   </section>
 
@@ -117,9 +121,13 @@
     </div>
 
     <ol id="entries" class="entries"></ol>
-    <div id="live" class="live" hidden>
-      <span class="live-tag">Sta parlando</span>
-      <p id="live-text" class="live-text"></p>
+    <div id="live-others" class="live" data-stream="others" hidden>
+      <span class="live-tag"></span>
+      <p class="live-text"></p>
+    </div>
+    <div id="live-me" class="live" data-stream="me" hidden>
+      <span class="live-tag"></span>
+      <p class="live-text"></p>
     </div>
   </main>
   <button id="jump" class="jump" hidden>Nuove frasi ↓</button>

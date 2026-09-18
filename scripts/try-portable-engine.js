@@ -67,7 +67,7 @@ async function play() {
   padded.set(samples);
   const realtime = !args.includes('--fast');
   for (let offset = 0; offset < padded.length; offset += CHUNK) {
-    engine.pushAudio(padded.slice(offset, offset + CHUNK));
+    engine.pushAudio(option('--stream', 'others'), padded.slice(offset, offset + CHUNK));
     if (realtime) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   setTimeout(() => {

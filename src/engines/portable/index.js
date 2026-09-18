@@ -1,6 +1,7 @@
 // Motore portabile (Windows): coordina il processo di riconoscimento e quello di traduzione.
 // Parla lo stesso protocollo del motore macOS (status, progress, level, partial, final, error),
-// così l'interfaccia è identica. L'audio arriva dal renderer tramite pushAudio().
+// così l'interfaccia è identica. L'audio arriva dal renderer tramite pushAudio(flusso, campioni):
+// "others" = audio del PC, "me" = microfono (entrambi in modalità "Io + altri").
 const os = require('node:os');
 const { SPEECH_LANGUAGES, ensureModels, translationRoute } = require('./models');
 const { cleanTranscript } = require('./text');
@@ -32,10 +33,9 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
       ready: false,
       backlog: [],
       backlogLength: 0,
-      segment: 0,
+      streams: {},
+      nextTranslation: 0,
       pendingTranslations: new Map(),
-      output: Promise.resolve(),
-      level: { peak: 0, last: -1, at: 0 },
     };
     session = current;
     const alive = () => session === current;
@@ -91,7 +91,7 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
       if (!alive()) return;
       current.ready = true;
       // L'audio arrivato durante il caricamento non va perso.
-      for (const samples of current.backlog) asr.post({ type: 'audio', samples });
+      for (const { stream, samples } of current.backlog) asr.post({ type: 'audio', stream, samples });
       current.backlog = [];
       onMessage({ type: 'status', state: 'listening', message: 'In ascolto' });
     } catch (error) {
@@ -134,32 +134,42 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
     });
   }
 
+  /** Stato di un flusso: numero della frase in corso e coda di uscita. */
+  function streamState(current, stream) {
+    current.streams[stream] ??= { segment: 0, output: Promise.resolve(), level: { peak: 0, last: -1, at: 0 } };
+    return current.streams[stream];
+  }
+
   function onRecognition(current, message) {
+    const { stream } = message;
+    const state = message.stream ? streamState(current, stream) : null;
     if (message.type === 'speech') {
-      onMessage({ type: 'partial', id: current.segment, text: '…' });
+      onMessage({ type: 'partial', stream, id: state.segment, text: '…' });
     } else if (message.type === 'partial') {
-      onMessage({ type: 'partial', id: current.segment, text: message.text || '…' });
+      onMessage({ type: 'partial', stream, id: state.segment, text: message.text || '…' });
     } else if (message.type === 'segment') {
       const text = cleanTranscript(message.text);
       if (!text) {
-        onMessage({ type: 'partial', id: current.segment, text: '' }); // era rumore: nasconde "sta parlando"
+        onMessage({ type: 'partial', stream, id: state.segment, text: '' }); // era rumore: nasconde "sta parlando"
         return;
       }
-      const id = current.segment;
-      current.segment += 1;
-      const translation = current.mt ? requestTranslation(current, id, text) : Promise.resolve(null);
-      // Le frasi escono nell'ordine in cui sono state dette, anche se una traduzione tarda.
-      current.output = current.output
+      const id = state.segment;
+      state.segment += 1;
+      const translation = current.mt ? requestTranslation(current, text) : Promise.resolve(null);
+      // Le frasi di ogni flusso escono nell'ordine in cui sono state dette, anche se una traduzione tarda.
+      state.output = state.output
         .then(() => translation)
         .then((translated) => {
-          if (session === current) onMessage({ type: 'final', id, text, translation: translated });
+          if (session === current) onMessage({ type: 'final', stream, id, text, translation: translated });
         });
     } else if (message.type === 'error') {
       onMessage({ type: 'error', code: 'engine_failed', message: message.message });
     }
   }
 
-  function requestTranslation(current, id, text) {
+  function requestTranslation(current, text) {
+    const id = current.nextTranslation;
+    current.nextTranslation += 1;
     return new Promise((resolve) => {
       current.pendingTranslations.set(id, resolve);
       current.mt.post({ type: 'translate', id, text });
@@ -173,32 +183,32 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
     resolve(message.type === 'translation' ? message.text : null);
   }
 
-  function pushAudio(samples) {
+  function pushAudio(stream, samples) {
     const current = session;
     if (!current) return;
-    reportLevel(current, samples);
+    reportLevel(current, stream, samples);
     if (current.ready) {
-      current.asr.post({ type: 'audio', samples });
+      current.asr.post({ type: 'audio', stream, samples });
       return;
     }
-    current.backlog.push(samples);
+    current.backlog.push({ stream, samples });
     current.backlogLength += samples.length;
     while (current.backlogLength > BACKLOG_SAMPLES) {
-      current.backlogLength -= current.backlog.shift().length;
+      current.backlogLength -= current.backlog.shift().samples.length;
     }
   }
 
-  function reportLevel(current, samples) {
+  function reportLevel(current, stream, samples) {
     let sum = 0;
     for (const sample of samples) sum += sample * sample;
-    const level = current.level;
+    const { level } = streamState(current, stream);
     level.peak = Math.max(level.peak, Math.sqrt(sum / samples.length));
     const now = Date.now();
     if (now - level.at < LEVEL_INTERVAL_MS) return;
     // -60 dB → 0, 0 dB → 1
     const value = Math.max(0, Math.min(1, (20 * Math.log10(Math.max(level.peak, 1e-6)) + 60) / 60));
     if (Math.abs(value - level.last) > 0.02) {
-      onMessage({ type: 'level', value: Math.round(value * 100) / 100 });
+      onMessage({ type: 'level', stream, value: Math.round(value * 100) / 100 });
       level.last = value;
     }
     level.peak = 0;

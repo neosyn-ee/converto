@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createNativeEngine } = require('./engines/native');
 const { createPortableEngine } = require('./engines/portable');
+const { SPEAKER_LABELS, createEchoFilter } = require('./speakers');
 
 const IS_MAC = process.platform === 'darwin';
 // Su macOS si usa il motore Swift; altrove (Windows) quello portabile. CONVERTO_ENGINE=portable
@@ -144,16 +145,25 @@ function send(message) {
 
 // ---------- Motore ----------
 
+// In modalità "Io + altri" le frasi del microfono passano dal filtro dell'eco.
+const echoFilter = createEchoFilter(deliverEngineMessage);
+
 function onEngineMessage(message) {
   if (selfTest) {
     selfTest(message);
     return;
   }
+  if (transcript?.mixed) echoFilter.handle(message);
+  else deliverEngineMessage(message);
+}
+
+function deliverEngineMessage(message) {
   if (message.type === 'final') writeTranscript(message);
   send(message);
 }
 
 function onEngineStopped() {
+  echoFilter.reset();
   closeTranscript();
   send({ type: 'stopped' });
 }
@@ -189,8 +199,9 @@ const engine = USE_PORTABLE_ENGINE
 function startEngine(config) {
   // Un nuovo avvio sostituisce il motore senza segnalare "fermo": l'interfaccia resta in ascolto.
   engine.stop();
+  echoFilter.reset();
   closeTranscript();
-  transcript = { source: config.source, target: config.target, stream: null };
+  transcript = { source: config.source, target: config.target, mixed: config.input === 'both', stream: null };
   engine.start(config);
 }
 
@@ -214,7 +225,7 @@ function languageName(code) {
   return new Intl.DisplayNames(['it'], { type: 'language' }).of(code.split('-')[0]) ?? code;
 }
 
-function writeTranscript({ text, translation }) {
+function writeTranscript({ text, translation, stream }) {
   if (!transcript) return;
   if (!transcript.stream) {
     fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
@@ -227,7 +238,10 @@ function writeTranscript({ text, translation }) {
     transcript.stream.write(`# Converto · ${now.toLocaleString('it-IT')} · ${pair}\n\n`);
   }
   const time = new Date().toLocaleTimeString('it-IT');
-  const lines = translation ? `**${time}** ${translation}  \n_${text}_\n\n` : `**${time}** ${text}\n\n`;
+  const speaker = transcript.mixed ? `**${SPEAKER_LABELS[stream]}:** ` : '';
+  const lines = translation
+    ? `**${time}** ${speaker}${translation}  \n_${text}_\n\n`
+    : `**${time}** ${speaker}${text}\n\n`;
   transcript.stream.write(lines);
 }
 
@@ -244,7 +258,7 @@ ipcMain.handle('app:info', () => ({
 }));
 ipcMain.on('engine:start', (_event, config) => startEngine(config));
 ipcMain.on('engine:stop', () => stopEngine());
-ipcMain.on('audio:chunk', (_event, samples) => engine.pushAudio(samples));
+ipcMain.on('audio:chunk', (_event, stream, samples) => engine.pushAudio(stream, samples));
 ipcMain.on('window:overlay', (_event, on) => setOverlay(Boolean(on)));
 ipcMain.on('open:transcripts', () => {
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });

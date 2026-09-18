@@ -4,6 +4,9 @@
 // se contiene una frase conclusa e ormai stabile (seguita da altre parole) la pubblica subito e
 // taglia quell'audio, così le frasi arrivano una alla volta e non vengono riscritte.
 // Alla pausa pubblica quello che resta.
+//
+// Può seguire più flussi insieme ("me" = microfono, "others" = audio del PC): ognuno ha il suo
+// rilevatore di voce e il suo audio in corso, il modello di riconoscimento è uno solo.
 const sherpa = require('sherpa-onnx-node');
 const { connect } = require('./worker-channel');
 
@@ -17,23 +20,22 @@ const WORDS_AFTER_BREAK = 3;             // parole che devono seguire una frase 
 const CLAUSE_BREAK_LENGTH = 200;         // periodi senza punto: oltre si chiude alla virgola…
 const FORCED_BREAK_LENGTH = 280;         // …e oltre a un confine di parola
 
-let vad = null;
+let models = null;
 let recognizer = null;
-let pending = new Float32Array(0);
-let preRoll = new Float32Array(0);
-let speech = null;                       // { chunks, length, sinceDecode } mentre qualcuno parla
+const streams = new Map();               // flusso → { vad, pending, preRoll, speech }
 
 const send = connect((message) => {
   try {
     if (message.type === 'init') init(message);
-    else if (message.type === 'audio') accept(message.samples);
+    else if (message.type === 'audio') accept(streamState(message.stream), message.samples);
     else if (message.type === 'flush') flush();
   } catch (error) {
     send({ type: 'error', message: error.message });
   }
 });
 
-function init({ models, threads }) {
+function init({ models: paths, threads }) {
+  models = paths;
   recognizer = new sherpa.OfflineRecognizer({
     featConfig: { sampleRate: SAMPLE_RATE, featureDim: 80 },
     modelConfig: {
@@ -45,8 +47,25 @@ function init({ models, threads }) {
       debug: 0,
     },
   });
-  // Il rilevatore serve solo a sapere se c'è voce: i tratti di parlato li gestiamo qui.
-  vad = new sherpa.Vad({
+  send({ type: 'ready' });
+}
+
+function streamState(name) {
+  if (!streams.has(name)) {
+    streams.set(name, {
+      name,
+      vad: createVad(),
+      pending: new Float32Array(0),
+      preRoll: new Float32Array(0),
+      speech: null, // { chunks, length, sinceDecode } mentre qualcuno parla
+    });
+  }
+  return streams.get(name);
+}
+
+// Il rilevatore serve solo a sapere se c'è voce: i tratti di parlato li gestiamo qui.
+function createVad() {
+  return new sherpa.Vad({
     sileroVad: {
       model: models.vad,
       threshold: 0.5,
@@ -59,48 +78,49 @@ function init({ models, threads }) {
     numThreads: 1,
     debug: 0,
   }, 30);
-  send({ type: 'ready' });
 }
 
-function accept(samples) {
-  if (!vad) return;
-  const audio = concat(pending, samples);
+function accept(state, samples) {
+  if (!recognizer) return;
+  const audio = concat(state.pending, samples);
   let offset = 0;
   for (; offset + VAD_WINDOW <= audio.length; offset += VAD_WINDOW) {
-    processWindow(audio.slice(offset, offset + VAD_WINDOW));
+    processWindow(state, audio.slice(offset, offset + VAD_WINDOW));
   }
-  pending = audio.slice(offset);
+  state.pending = audio.slice(offset);
 }
 
-function processWindow(window) {
-  vad.acceptWaveform(window);
-  while (!vad.isEmpty()) vad.pop();
+function processWindow(state, window) {
+  state.vad.acceptWaveform(window);
+  while (!state.vad.isEmpty()) state.vad.pop();
 
-  if (vad.isDetected()) {
-    if (!speech) {
-      speech = { chunks: [preRoll], length: preRoll.length, sinceDecode: 0 };
-      send({ type: 'speech' });
+  if (state.vad.isDetected()) {
+    if (!state.speech) {
+      state.speech = { chunks: [state.preRoll], length: state.preRoll.length, sinceDecode: 0 };
+      send({ type: 'speech', stream: state.name });
     }
+    const { speech } = state;
     speech.chunks.push(window);
     speech.length += window.length;
     speech.sinceDecode += window.length;
     if (speech.sinceDecode >= DECODE_EVERY && speech.length >= MIN_DECODE) {
       speech.sinceDecode = 0;
-      publishStableSentences();
+      publishStableSentences(state);
     }
   } else {
-    if (speech) finishSpeech();
-    preRoll = concat(preRoll, window).slice(-PRE_ROLL);
+    if (state.speech) finishSpeech(state);
+    state.preRoll = concat(state.preRoll, window).slice(-PRE_ROLL);
   }
 }
 
 /** Decodifica il parlato in corso e pubblica le frasi già concluse. */
-function publishStableSentences() {
+function publishStableSentences(state) {
+  const { speech } = state;
   const audio = concat(...speech.chunks);
   const result = decode(audio);
   const cut = breakIndex(result.tokens);
   if (cut > 0) {
-    send({ type: 'segment', text: joinTokens(result.tokens.slice(0, cut)) });
+    send({ type: 'segment', stream: state.name, text: joinTokens(result.tokens.slice(0, cut)) });
     const cutSample = Math.max(0, Math.floor((result.timestamps[cut] - CUT_MARGIN) * SAMPLE_RATE));
     const rest = audio.slice(cutSample);
     speech.chunks = [rest];
@@ -108,13 +128,13 @@ function publishStableSentences() {
   } else {
     speech.chunks = [audio];
   }
-  send({ type: 'partial', text: joinTokens(result.tokens.slice(Math.max(cut, 0))) });
+  send({ type: 'partial', stream: state.name, text: joinTokens(result.tokens.slice(Math.max(cut, 0))) });
 }
 
-function finishSpeech() {
-  const result = decode(concat(...speech.chunks));
-  speech = null;
-  send({ type: 'segment', text: result.text.trim() });
+function finishSpeech(state) {
+  const result = decode(concat(...state.speech.chunks));
+  state.speech = null;
+  send({ type: 'segment', stream: state.name, text: result.text.trim() });
 }
 
 /** Indice (escluso) fino a cui i token formano frasi concluse e stabili; -1 se non ce ne sono. */
@@ -164,6 +184,8 @@ function concat(...arrays) {
 
 /** Chiude il parlato in corso (usato a fine file nei test). */
 function flush() {
-  if (speech) finishSpeech();
+  for (const state of streams.values()) {
+    if (state.speech) finishSpeech(state);
+  }
   send({ type: 'flushed' });
 }

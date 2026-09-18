@@ -25,7 +25,9 @@ const NO_TRANSLATION = 'none';
 // Lingue supportate dal motore portabile (Windows): Parakeet v3 e i modelli Opus-MT disponibili.
 const PORTABLE_SOURCES = ['en-US', 'en-GB', 'it-IT', 'fr-FR', 'es-ES', 'de-DE', 'pt-BR'];
 const PORTABLE_TARGETS = ['it', 'en', 'fr', 'es', 'de', 'pt', 'zh'];
-const INPUT_LABELS = { system: 'Audio del Mac', mic: 'Microfono' };
+const INPUT_LABELS = { system: 'Audio del Mac', mic: 'Microfono', both: 'Io + altri' };
+const SPEAKER_LABELS = { me: 'Io', others: 'Altri' };
+const STREAMS = ['others', 'me'];
 const DEFAULT_SETTINGS = { mode: 'translate', source: 'en-US', target: 'it', input: 'system', showOriginal: true, scale: 1 };
 const MAX_ENTRIES = 400;
 const SILENCE_HINT_MS = 8000;
@@ -63,8 +65,10 @@ const el = {
   inputs: [...document.querySelectorAll('[data-input]')],
   transcript: $('transcript'),
   entries: $('entries'),
-  live: $('live'),
-  liveText: $('live-text'),
+  liveRows: Object.fromEntries(STREAMS.map((stream) => {
+    const root = $(`live-${stream}`);
+    return [stream, { root, tag: root.querySelector('.live-tag'), text: root.querySelector('.live-text') }];
+  })),
   empty: $('empty'),
   banner: $('banner'),
   bannerText: $('banner-text'),
@@ -87,8 +91,10 @@ const state = {
   running: false,
   listening: false,
   failed: false,
-  live: null,
-  lastFinalId: -1,
+  mixed: false, // sessione "Io + altri": frasi etichettate con chi parla
+  live: { me: null, others: null },
+  lastFinalId: { me: -1, others: -1 },
+  levels: { me: 0, others: 0 },
   lastSoundAt: 0,
   renderQueued: false,
   bannerPane: null,
@@ -191,7 +197,8 @@ function setRunning(running) {
   if (!running) {
     if (platform.captureInRenderer) audioCapture.stop();
     state.listening = false;
-    state.live = null;
+    state.live = { me: null, others: null };
+    state.levels = { me: 0, others: 0 };
     setLevel(0);
     queueLive();
     if (!state.failed) setStatus('Pronto');
@@ -211,8 +218,10 @@ function start() {
   hideBanner();
   state.failed = false;
   el.body.classList.remove('failed');
-  state.live = null;
-  state.lastFinalId = -1;
+  state.mixed = settings.input === 'both';
+  el.body.classList.toggle('mixed', state.mixed);
+  state.live = { me: null, others: null };
+  state.lastFinalId = { me: -1, others: -1 };
   setRunning(true);
   setStatus('Avvio…');
   window.converto.start({
@@ -228,7 +237,7 @@ function stop() {
 
 function onCaptureError(error) {
   window.converto.stop();
-  if (settings.input === 'mic' && error.name === 'NotAllowedError') {
+  if (error.stream === 'me' && error.name === 'NotAllowedError') {
     showError({
       code: 'mic_permission_denied',
       message: "Accesso al microfono negato. In Impostazioni → Privacy e sicurezza → Microfono consenti l'accesso alle app desktop.",
@@ -240,9 +249,12 @@ function onCaptureError(error) {
   }
 }
 
-function setLevel(value) {
-  document.documentElement.style.setProperty('--level', value);
-  if (value > 0.05) state.lastSoundAt = Date.now();
+// Con due flussi l'indicatore mostra il più forte dei due.
+function setLevel(value, stream = 'others') {
+  state.levels[stream] = value;
+  const level = Math.max(state.levels.me, state.levels.others);
+  document.documentElement.style.setProperty('--level', level);
+  if (level > 0.05) state.lastSoundAt = Date.now();
 }
 
 // Suggerisce di controllare l'audio se non arriva nulla per un po'.
@@ -275,13 +287,22 @@ function paragraph(className, text) {
   return p;
 }
 
-function addEntry({ text, translation }) {
+function addEntry({ text, translation, stream }) {
   const wasAtBottom = isNearBottom();
   const item = document.createElement('li');
   item.className = 'entry';
   const time = new Date().toLocaleTimeString('it-IT');
-  state.finals.push({ time, text, translation });
-  item.append(paragraph('meta', time), paragraph('tr', translation ?? text));
+  const speaker = state.mixed ? stream : null;
+  state.finals.push({ time, text, translation, speaker });
+  const main = paragraph('tr', translation ?? text);
+  if (speaker) {
+    item.classList.add(`speaker-${speaker}`);
+    const chip = document.createElement('span');
+    chip.className = `speaker speaker-${speaker}`;
+    chip.textContent = SPEAKER_LABELS[speaker];
+    main.prepend(chip);
+  }
+  item.append(paragraph('meta', time), main);
   if (translation) item.append(paragraph('orig', text));
   el.entries.append(item);
   while (el.entries.childElementCount > MAX_ENTRIES) el.entries.firstElementChild.remove();
@@ -310,12 +331,15 @@ function tail(text, max) {
 
 function renderLive() {
   state.renderQueued = false;
-  const text = state.live?.text;
   const wasAtBottom = isNearBottom();
-  el.live.hidden = !text;
-  if (text) {
-    const max = el.body.classList.contains('overlay') ? LIVE_TAIL.overlay : LIVE_TAIL.window;
-    el.liveText.textContent = tail(text, max);
+  const max = el.body.classList.contains('overlay') ? LIVE_TAIL.overlay : LIVE_TAIL.window;
+  for (const stream of STREAMS) {
+    const row = el.liveRows[stream];
+    const text = state.live[stream]?.text;
+    row.root.hidden = !text;
+    if (!text) continue;
+    row.tag.textContent = state.mixed ? SPEAKER_LABELS[stream] : 'Sta parlando';
+    row.text.textContent = tail(text, max);
     el.empty.hidden = true;
   }
   followScroll(wasAtBottom);
@@ -325,7 +349,7 @@ function clearTranscript() {
   el.entries.replaceChildren();
   state.finals = [];
   updateCopyCount();
-  state.live = null;
+  state.live = { me: null, others: null };
   queueLive();
   el.empty.hidden = false;
   el.jump.hidden = true;
@@ -334,7 +358,10 @@ function clearTranscript() {
 // Testo semplice con orari: in modalità traduzione riporta sia l'originale sia la traduzione.
 function transcriptText() {
   return state.finals
-    .map(({ time, text, translation }) => (translation ? `[${time}] ${text}\n           → ${translation}` : `[${time}] ${text}`))
+    .map(({ time, text, translation, speaker }) => {
+      const who = speaker ? `${SPEAKER_LABELS[speaker]}: ` : '';
+      return translation ? `[${time}] ${who}${text}\n           → ${translation}` : `[${time}] ${who}${text}`;
+    })
     .join('\n');
 }
 
@@ -406,20 +433,25 @@ window.converto.onEngine((message) => {
       setStatus(`Scarico il modello vocale… ${Math.round(message.value * 100)}%`);
       break;
     case 'level':
-      setLevel(message.value);
+      setLevel(message.value, message.stream);
       break;
-    case 'partial':
-      if (message.id <= state.lastFinalId) break;
-      state.live = { id: message.id, text: message.text };
+    case 'partial': {
+      const stream = message.stream ?? 'others';
+      if (message.id <= state.lastFinalId[stream]) break;
+      state.live[stream] = { id: message.id, text: message.text };
       queueLive();
       break;
+    }
     case 'final':
-      if (state.bannerCode === 'mic_silent') hideBanner(); // l'audio in realtà arriva
-      state.lastFinalId = message.id;
-      if (state.live && state.live.id <= message.id) state.live = null;
-      addEntry(message);
+    case 'discard': { // discard: frase del microfono scartata perché eco degli altri
+      const stream = message.stream ?? 'others';
+      if (message.type === 'final' && state.bannerCode === 'mic_silent') hideBanner(); // l'audio in realtà arriva
+      state.lastFinalId[stream] = Math.max(state.lastFinalId[stream], message.id);
+      if (state.live[stream] && state.live[stream].id <= message.id) state.live[stream] = null;
+      if (message.type === 'final') addEntry(message);
       queueLive();
       break;
+    }
     case 'notice':
       showBanner('info', message.message);
       break;
@@ -514,6 +546,7 @@ function applyPlatform(info) {
   if (info.platform !== 'darwin') {
     INPUT_LABELS.system = 'Audio del PC';
     el.systemLabel.textContent = 'Audio del PC';
+    document.querySelector('[data-input="both"]').title = 'Microfono (Io) e audio del PC (Altri) insieme: per le call';
     el.privacyText.textContent = "Tutto in locale: l'audio non lascia il PC";
   }
   if (info.captureInRenderer) {

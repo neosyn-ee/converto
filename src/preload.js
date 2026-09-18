@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('converto', {
   appInfo: () => ipcRenderer.invoke('app:info'),
-  sendAudio: (samples) => ipcRenderer.send('audio:chunk', samples),
+  sendAudio: (stream, samples) => ipcRenderer.send('audio:chunk', stream, samples),
   start: (config) => ipcRenderer.send('engine:start', config),
   stop: () => ipcRenderer.send('engine:stop'),
   setOverlay: (on) => ipcRenderer.send('window:overlay', on),
