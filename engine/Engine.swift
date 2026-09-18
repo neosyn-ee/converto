@@ -75,9 +75,8 @@ enum Engine {
             try await pipeline.finish()
             return
         case .files(let micPath, let systemPath):
-            async let system: Void = feed(file: systemPath, realtime: true, into: onSystemAudio)
-            async let microphone: Void = feed(file: micPath, realtime: true, into: onMicrophone)
-            _ = try await (system, microphone)
+            // I due file avanzano insieme, come la cattura vera in cui entrambi i flussi scorrono di continuo.
+            try await feed(files: [systemPath, micPath], into: [onSystemAudio, onMicrophone])
             for pipeline in pipelines.values {
                 try await pipeline.finish()
             }
@@ -128,6 +127,24 @@ enum Engine {
         case .unknown:
             Output.status("permission", "Consenti a Converto di registrare l'audio del Mac")
             guard await AudioCapturePermission.request() else { throw denied }
+        }
+    }
+
+    /// Più file letti in parallelo a blocchi di 100 ms, alla velocità di riproduzione.
+    private static func feed(files paths: [String], into feeds: [(AVAudioPCMBuffer) -> Void]) async throws {
+        let files = try paths.map { try AVAudioFile(forReading: URL(fileURLWithPath: $0)) }
+        while files.contains(where: { $0.framePosition < $0.length }) {
+            for (file, feed) in zip(files, feeds) {
+                let frames = AVAudioFrameCount(file.processingFormat.sampleRate / 10)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else { continue }
+                if file.framePosition < file.length {
+                    try file.read(into: buffer, frameCount: frames)
+                } else {
+                    buffer.frameLength = frames // file finito: silenzio
+                }
+                feed(buffer)
+            }
+            try await Task.sleep(for: .milliseconds(100))
         }
     }
 
