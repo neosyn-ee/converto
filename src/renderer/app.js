@@ -213,7 +213,9 @@ function setRunning(running) {
 function start() {
   if (platform.captureInRenderer) {
     // Parte subito, dentro il clic: il sistema chiede un gesto dell'utente per catturare l'audio.
-    audioCapture.start(settings.input).catch(onCaptureError);
+    audioCapture.start(settings.input)
+      .then((notices) => notices.forEach((notice) => showBanner('info', notice)))
+      .catch(onCaptureError);
   }
   hideBanner();
   state.failed = false;
