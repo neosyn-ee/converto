@@ -84,7 +84,7 @@ const el = {
 };
 
 const settings = loadSettings();
-const platform = { captureInRenderer: false };
+const platform = { captureInRenderer: false, isMac: true };
 let sources = SOURCES;
 let targets = TARGETS;
 const state = {
@@ -196,6 +196,7 @@ function setRunning(running) {
   state.running = running;
   if (!running) {
     if (platform.captureInRenderer) audioCapture.stop();
+    else micCapture.stop();
     state.listening = false;
     state.live = { me: null, others: null };
     state.levels = { me: 0, others: 0 };
@@ -210,7 +211,7 @@ function setRunning(running) {
   el.toggle.setAttribute('aria-label', label);
 }
 
-function start() {
+async function start() {
   if (platform.captureInRenderer) {
     // Parte subito, dentro il clic: il sistema chiede un gesto dell'utente per catturare l'audio.
     audioCapture.start(settings.input)
@@ -226,14 +227,27 @@ function start() {
   state.lastFinalId = { me: -1, others: -1 };
   setRunning(true);
   setStatus('Avvio…');
+  // Senza cuffie il microfono risente gli altri: su macOS lo cattura l'app, che sa togliere l'eco
+  // delle casse. Se non ci riesce lo cattura il motore, come prima.
+  const micFromApp = state.mixed && !platform.captureInRenderer ? await micCapture.start() : false;
+  if (!state.running) {
+    micCapture.stop(); // fermato mentre si apriva il microfono
+    return;
+  }
+  if (state.mixed && !micFromApp && !platform.captureInRenderer) {
+    showBanner('info', "Non riesco a togliere l'eco delle casse dal microfono: le frasi degli altri possono ricomparire come «Io». "
+      + 'Con le cuffie non succede.', ERROR_ACTIONS.permission_denied);
+  }
   window.converto.start({
     source: settings.source,
     target: isTranscribing() ? NO_TRANSLATION : settings.target,
     input: settings.input,
+    micFromApp,
   });
 }
 
 function stop() {
+  micCapture.stop();
   window.converto.stop();
 }
 
@@ -544,6 +558,7 @@ document.addEventListener('keydown', (event) => {
 // Differenze tra macOS (motore Swift) e Windows (motore portabile).
 function applyPlatform(info) {
   platform.captureInRenderer = info.captureInRenderer;
+  platform.isMac = info.platform === 'darwin';
   el.body.classList.add(`platform-${info.platform}`);
   if (info.platform !== 'darwin') {
     INPUT_LABELS.system = 'Audio del PC';

@@ -259,6 +259,7 @@ ipcMain.handle('app:info', () => ({
 ipcMain.on('engine:start', (_event, config) => startEngine(config));
 ipcMain.on('engine:stop', () => stopEngine());
 ipcMain.on('audio:chunk', (_event, stream, samples) => engine.pushAudio(stream, samples));
+ipcMain.on('engine:mic-audio', (_event, chunk) => engine.sendMicAudio(chunk));
 ipcMain.on('window:overlay', (_event, on) => setOverlay(Boolean(on)));
 ipcMain.on('open:transcripts', () => {
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });

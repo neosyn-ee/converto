@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('converto', {
   sendAudio: (stream, samples) => ipcRenderer.send('audio:chunk', stream, samples),
   start: (config) => ipcRenderer.send('engine:start', config),
   stop: () => ipcRenderer.send('engine:stop'),
+  sendMicAudio: (chunk) => ipcRenderer.send('engine:mic-audio', chunk),
   setOverlay: (on) => ipcRenderer.send('window:overlay', on),
   openTranscripts: () => ipcRenderer.send('open:transcripts'),
   openSettings: (pane) => ipcRenderer.send('open:settings', pane),

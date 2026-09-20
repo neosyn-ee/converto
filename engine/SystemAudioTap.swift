@@ -36,11 +36,6 @@ final class SystemAudioTap {
         description.muteBehavior = .unmuted
         try CoreAudioSupport.check(AudioHardwareCreateProcessTap(description, &tapID), "la creazione del tap audio")
 
-        var streamDescription = try tapStreamDescription()
-        guard let format = AVAudioFormat(streamDescription: &streamDescription) else {
-            throw EngineError(code: "capture_failed", message: "Formato audio del tap non supportato")
-        }
-
         let outputUID = try CoreAudioSupport.deviceUID(CoreAudioSupport.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice))
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Converto",
@@ -57,6 +52,15 @@ final class SystemAudioTap {
         ]
         try CoreAudioSupport.check(AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID),
                                    "la creazione del dispositivo di cattura")
+
+        // Il tap dichiara sempre 48 kHz, ma i buffer arrivano alla frequenza del dispositivo di
+        // cattura, cioè dell'uscita: le casse del MacBook Pro lavorano a 96 kHz. Con la frequenza
+        // del tap il riconoscimento riceverebbe la voce rallentata di un'ottava.
+        var streamDescription = try tapStreamDescription()
+        streamDescription.mSampleRate = try CoreAudioSupport.nominalSampleRate(aggregateID)
+        guard let format = AVAudioFormat(streamDescription: &streamDescription) else {
+            throw EngineError(code: "capture_failed", message: "Formato audio del tap non supportato")
+        }
 
         let onBuffer = self.onBuffer
         try CoreAudioSupport.check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) { _, input, _, _, _ in

@@ -9,7 +9,8 @@
 //   <scenario>-mic.wav       microfono: tua voce + eco delle casse + rumore
 //   <scenario>-near.wav      solo la tua voce, <scenario>-echo.wav solo l'eco (per misurare il filtro)
 //
-// Poi:  converto-engine --target none --mic-file <scenario>-mic.wav --system-file system.wav   (Mac)
+// Poi:  converto-engine --target none --file system.wav --realtime &                          (Mac: un processo
+//       converto-engine --target none --file <scenario>-mic.wav --realtime                      per flusso, come l'app)
 //       node scripts/try-portable-engine.js system.wav --me <scenario>-mic.wav --target none   (Windows)
 //       node scripts/eval-echo-gate.js [cartella]
 const { execFileSync } = require('node:child_process');
