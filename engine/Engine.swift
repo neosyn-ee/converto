@@ -5,8 +5,10 @@ import Speech
 /// Motore di Converto: cattura audio → trascrizione (SpeechAnalyzer) → traduzione.
 /// Riceve la configurazione da riga di comando e comunica con Electron via JSON su stdout.
 ///
-///   converto-engine --source en-US --target it|none --input system|mic [--mic <UID dispositivo>]
+///   converto-engine --source en-US --target it|none --input system|mic|stdin [--mic <UID dispositivo>]
 ///   converto-engine --source en-US --target it --file audio.wav [--realtime]
+///
+/// `--input stdin`: il microfono arriva da Electron già senza l'eco delle casse (vedi PipedAudio).
 @main
 enum Engine {
     private static var captureSource: AnyObject?
@@ -15,8 +17,9 @@ enum Engine {
     static func main() async {
         let config = Config.parse()
         exitOnSignal()
-        if case .file = config.input {} else {
-            exitWhenStdinCloses()
+        switch config.input {
+        case .file, .standardInput: break // il file finisce da sé, stdin lo sorveglia PipedAudio
+        default: exitWhenStdinCloses()
         }
         do {
             try await run(config)
@@ -90,6 +93,12 @@ enum Engine {
             let microphone = MicrophoneCapture(deviceUID: config.microphoneUID, onBuffer: feeder.feed)
             try await microphone.start()
             captureSource = microphone
+        case .standardInput:
+            guard let piped = PipedAudio(onBuffer: feeder.feed, onEnd: shutdown) else {
+                throw EngineError(code: "capture_failed", message: "Formato audio del microfono non supportato")
+            }
+            piped.start()
+            captureSource = piped
         case .system:
             try await ensureAudioCapturePermission()
             let tap = SystemAudioTap(onBuffer: feeder.feed)
@@ -162,6 +171,7 @@ enum Engine {
     private static func shutdown() {
         (captureSource as? SystemAudioTap)?.stop()
         (captureSource as? MicrophoneCapture)?.stop()
+        (captureSource as? PipedAudio)?.stop()
         exit(0)
     }
 }
@@ -171,7 +181,7 @@ struct Config {
     static let noTranslation = "none"
 
     enum Input {
-        case system, microphone, file(String)
+        case system, microphone, standardInput, file(String)
     }
 
     var source = "en-US"
@@ -187,7 +197,12 @@ struct Config {
             switch argument {
             case "--source": config.source = arguments.next() ?? config.source
             case "--target": config.target = arguments.next() ?? config.target
-            case "--input": config.input = arguments.next() == "mic" ? .microphone : .system
+            case "--input":
+                switch arguments.next() {
+                case "mic": config.input = .microphone
+                case "stdin": config.input = .standardInput
+                default: config.input = .system
+                }
             case "--file": config.input = .file(arguments.next() ?? "")
             case "--realtime": config.realtime = true
             case "--mic": config.microphoneUID = arguments.next()

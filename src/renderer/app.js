@@ -187,6 +187,7 @@ function setStatus(text, sub = describeSetup()) {
 function setRunning(running) {
   state.running = running;
   if (!running) {
+    micCapture.stop();
     state.listening = false;
     state.live = { me: null, others: null };
     state.levels = { me: 0, others: 0 };
@@ -201,7 +202,7 @@ function setRunning(running) {
   el.toggle.setAttribute('aria-label', label);
 }
 
-function start() {
+async function start() {
   hideBanner();
   state.failed = false;
   el.body.classList.remove('failed');
@@ -211,14 +212,27 @@ function start() {
   state.lastFinalId = { me: -1, others: -1 };
   setRunning(true);
   setStatus('Avvio…');
+  // Senza cuffie il microfono risente gli altri: in "Io + altri" lo cattura l'app, che sa togliere
+  // l'eco delle casse. Se non ci riesce lo cattura il motore, come prima.
+  const micFromApp = state.mixed ? await micCapture.start() : false;
+  if (!state.running) {
+    micCapture.stop(); // fermato mentre si apriva il microfono
+    return;
+  }
+  if (state.mixed && !micFromApp) {
+    showBanner('info', "Non riesco a togliere l'eco delle casse dal microfono: le frasi degli altri possono ricomparire come «Io». "
+      + 'Con le cuffie non succede.', ERROR_ACTIONS.permission_denied);
+  }
   window.converto.start({
     source: settings.source,
     target: isTranscribing() ? NO_TRANSLATION : settings.target,
     input: settings.input,
+    micFromApp,
   });
 }
 
 function stop() {
+  micCapture.stop();
   window.converto.stop();
 }
 

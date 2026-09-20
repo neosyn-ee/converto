@@ -3,6 +3,9 @@
 //
 // Ogni flusso ha il suo processo: "others" ascolta l'audio del Mac, "me" il microfono.
 // In modalità "Io + altri" girano entrambi e i messaggi vengono etichettati con `stream`.
+//
+// Con `micFromApp` il microfono non lo cattura il motore ma Electron, che sa toglierne l'eco delle
+// casse, e arriva al processo di "me" su stdin (float 32 bit, mono, 16 kHz).
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 
@@ -15,19 +18,27 @@ const MAX_RESTARTS_PER_MINUTE = 3;
 function createNativeEngine({ enginePath, onMessage, onStopped }) {
   let run = null;
 
-  function start({ source, target, input }) {
+  function start({ source, target, input, micFromApp = false }) {
     stop();
     const streams = STREAMS_BY_INPUT[input] ?? STREAMS_BY_INPUT.system;
-    const current = { streams, source, target, procs: [], listening: new Set(), reported: new Set(), restarts: [], lastId: {} };
+    const current = {
+      streams, source, target, micFromApp,
+      procs: [], micProc: null, listening: new Set(), reported: new Set(), restarts: [], lastId: {},
+    };
     run = current;
     for (const stream of streams) spawnStream(current, stream);
   }
 
   function spawnStream(current, stream) {
-    const proc = spawn(enginePath, ['--source', current.source, '--target', current.target, '--input', INPUT_BY_STREAM[stream]], {
+    const engineInput = stream === 'me' && current.micFromApp ? 'stdin' : INPUT_BY_STREAM[stream];
+    const proc = spawn(enginePath, ['--source', current.source, '--target', current.target, '--input', engineInput], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     current.procs.push(proc);
+    if (stream === 'me') {
+      current.micProc = proc;
+      proc.stdin.on('error', () => {}); // il motore può chiudere prima di noi: non è un problema dell'app
+    }
     let failure = null;
     // Un motore riavviato numera le frasi di nuovo da 0: si prosegue dall'ultimo numero visto,
     // altrimenti l'interfaccia scarterebbe le frasi nuove come già concluse.
@@ -100,13 +111,19 @@ function createNativeEngine({ enginePath, onMessage, onStopped }) {
     }
   }
 
+  /** Blocchi del microfono catturato da Electron: vanno al processo del flusso "Io". */
+  function sendMicAudio(chunk) {
+    const proc = run?.micProc;
+    if (run?.micFromApp && proc?.stdin?.writable) proc.stdin.write(Buffer.from(chunk));
+  }
+
   function stop() {
     const current = run;
     run = null;
     for (const proc of current?.procs ?? []) proc.kill('SIGTERM');
   }
 
-  return { start, stop };
+  return { start, stop, sendMicAudio };
 }
 
 module.exports = { createNativeEngine };

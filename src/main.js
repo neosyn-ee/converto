@@ -181,6 +181,7 @@ function closeTranscript() {
 
 ipcMain.on('engine:start', (_event, config) => startEngine(config));
 ipcMain.on('engine:stop', () => stopEngine());
+ipcMain.on('engine:mic-audio', (_event, chunk) => engine.sendMicAudio(chunk));
 ipcMain.on('window:overlay', (_event, on) => setOverlay(Boolean(on)));
 ipcMain.on('open:transcripts', () => {
   fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
