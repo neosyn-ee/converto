@@ -27,11 +27,12 @@ function createPortableEngine({ modelsDir, fork, fetchImpl, onMessage, onStopped
   const threads = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
   let session = null;
 
-  async function start({ source, target, input }) {
+  async function start({ source, target, input, micFromApp }) {
     stop();
     const current = {
-      // Con entrambi i flussi, l'audio del PC fa da riferimento per togliere l'eco dal microfono.
-      echoGate: input === 'both' ? createEchoGate() : null,
+      // Con entrambi i flussi l'eco delle casse la toglie già Chromium (`micFromApp`); dove non può,
+      // resta il filtro che usa l'audio del PC come riferimento.
+      echoGate: input === 'both' && !micFromApp ? createEchoGate() : null,
       workers: [],
       ready: false,
       backlog: [],

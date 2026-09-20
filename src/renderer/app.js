@@ -212,12 +212,8 @@ function setRunning(running) {
 }
 
 async function start() {
-  if (platform.captureInRenderer) {
-    // Parte subito, dentro il clic: il sistema chiede un gesto dell'utente per catturare l'audio.
-    audioCapture.start(settings.input)
-      .then((notices) => notices.forEach((notice) => showBanner('info', notice)))
-      .catch(onCaptureError);
-  }
+  // Parte subito, dentro il clic: il sistema chiede un gesto dell'utente per catturare l'audio.
+  const capture = platform.captureInRenderer ? audioCapture.start(settings.input) : null;
   hideBanner();
   state.failed = false;
   el.body.classList.remove('failed');
@@ -227,16 +223,28 @@ async function start() {
   state.lastFinalId = { me: -1, others: -1 };
   setRunning(true);
   setStatus('Avvio…');
-  // Senza cuffie il microfono risente gli altri: su macOS lo cattura l'app, che sa togliere l'eco
-  // delle casse. Se non ci riesce lo cattura il motore, come prima.
-  const micFromApp = state.mixed && !platform.captureInRenderer ? await micCapture.start() : false;
+  // Senza cuffie il microfono risente gli altri: l'app lo cattura da sé perché solo Chromium sa
+  // togliere l'eco delle casse. Se non ci riesce, il microfono torna com'era.
+  let micFromApp = false;
+  if (capture) {
+    try {
+      const { notices, echoCancelled } = await capture;
+      notices.forEach((notice) => showBanner('info', notice));
+      micFromApp = echoCancelled;
+    } catch (error) {
+      onCaptureError(error);
+      return;
+    }
+  } else if (state.mixed) {
+    micFromApp = await micCapture.start();
+  }
   if (!state.running) {
     micCapture.stop(); // fermato mentre si apriva il microfono
     return;
   }
-  if (state.mixed && !micFromApp && !platform.captureInRenderer) {
+  if (state.mixed && !micFromApp) {
     showBanner('info', "Non riesco a togliere l'eco delle casse dal microfono: le frasi degli altri possono ricomparire come «Io». "
-      + 'Con le cuffie non succede.', ERROR_ACTIONS.permission_denied);
+      + 'Con le cuffie non succede.', platform.isMac ? ERROR_ACTIONS.permission_denied : undefined);
   }
   window.converto.start({
     source: settings.source,
