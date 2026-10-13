@@ -12,19 +12,44 @@ const micCapture = (() => {
   const CHUNK = 1600; // 100 ms
   const SOUND_TIMEOUT_MS = 1200;
   const SOUND_POLL_MS = 100;
+  // Un microfono che non si apre entro questo tempo non risponde: lo cattura il motore.
+  const OPEN_TIMEOUT_MS = 5000;
   // Microfoni di auricolari Bluetooth: aprirli mette le cuffie in modalità chiamata (mono, più
-  // forte e meno nitido). Come fa il motore, si preferisce un microfono non Bluetooth.
+  // forte e meno nitido). Come fa il motore, si usa allora il microfono integrato del Mac.
   const BLUETOOTH_HINT = /hands-?free|vivavoce|headset|auricolare|bluetooth|airpods|buds|\bbt\b/i;
+  // Su macOS Chromium aggiunge al nome il collegamento: "MacBook Pro Microphone (Built-in)".
+  // Non basta il primo microfono non Bluetooth: prima di quello del Mac possono esserci il
+  // microfono dell'iPhone (Continuity, si apre solo se il telefono risponde) o dispositivi
+  // virtuali muti come BlackHole.
+  const BUILT_IN = /\(Built-in\)$/;
 
   let session = null;
 
-  /** Un microfono non Bluetooth se il predefinito è un auricolare; null = quello predefinito. */
+  /** Il microfono integrato se il predefinito è un auricolare Bluetooth; null = quello predefinito. */
   async function preferredMicrophone() {
     const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === 'audioinput');
     const byDefault = inputs.find((device) => device.deviceId === 'default');
     if (!byDefault || !BLUETOOTH_HINT.test(byDefault.label)) return null;
-    return inputs.find((device) => !['default', 'communications'].includes(device.deviceId)
-      && device.label && !BLUETOOTH_HINT.test(device.label))?.deviceId ?? null;
+    return inputs.find((device) => device.deviceId !== 'default' && BUILT_IN.test(device.label))?.deviceId ?? null;
+  }
+
+  /** getUserMedia senza aspettare per sempre un microfono che non risponde. */
+  function openMicrophone(audio) {
+    return new Promise((resolve, reject) => {
+      let late = false;
+      const timer = setTimeout(() => {
+        late = true;
+        reject(new Error('Il microfono non risponde'));
+      }, OPEN_TIMEOUT_MS);
+      navigator.mediaDevices.getUserMedia({ audio }).then((media) => {
+        clearTimeout(timer);
+        if (late) media.getTracks().forEach((track) => track.stop()); // arrivato tardi: nessuno lo usa
+        else resolve(media);
+      }, (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
   }
 
   /** Avvia la cattura; false se l'eco non si può togliere e il microfono lo deve prendere il motore. */
@@ -41,9 +66,9 @@ const micCapture = (() => {
 
     let media;
     try {
-      media = await navigator.mediaDevices.getUserMedia({ audio });
+      media = await openMicrophone(audio);
     } catch {
-      return false; // niente 'all' (macOS più vecchio, Windows 10) o microfono negato
+      return false; // niente 'all' (macOS più vecchio, Windows 10), microfono negato o che non risponde
     }
     const current = { media, context: new AudioContext({ sampleRate: SAMPLE_RATE }), sounded: false };
     session = current;
